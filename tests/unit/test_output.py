@@ -37,12 +37,12 @@ def test_classify_confidence_high():
 
 
 def test_classify_confidence_medium():
-    result = _search_result(_verification(0.70))
+    result = _search_result(_verification(0.77))
     assert classify_confidence(result) == MatchStatus.MEDIUM_CONFIDENCE
 
 
 def test_classify_confidence_low():
-    result = _search_result(_verification(0.61))
+    result = _search_result(_verification(0.72))
     assert classify_confidence(result) == MatchStatus.LOW_CONFIDENCE
 
 

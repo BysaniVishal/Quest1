@@ -48,7 +48,7 @@ class FasterWhisperASR:
     E2E (Phase 7)."""
 
     def __init__(
-        self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8",
+        self, model_size: str = "base.en", device: str = "cpu", compute_type: str = "int8",
         vad_filter: bool = True,
     ):
         self._model_size = model_size

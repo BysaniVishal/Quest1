@@ -25,7 +25,12 @@ class SearchConfig:
     weight_coverage: float = 0.35
     weight_contiguity: float = 0.25
 
-    valid_score_threshold: float = 0.6
+    # Calibrated 2026-08-25 against real E2E scores (OK.ru 0.8135, Apollo 11
+    # 0.879) and a real false-positive case (spurious short-phrase matches
+    # topping out at 0.62 vs. the true match at 0.809) -- 0.70 rejects every
+    # known false positive with margin while staying below every known
+    # legitimate ASR-corrupted match (lowest observed: 0.80).
+    valid_score_threshold: float = 0.70
 
     # fallback escalation
     fuzzy_anchor_max_distance: int = 2
@@ -48,8 +53,16 @@ class SearchConfig:
     onset_absolute_silence_floor: float = 0.01
 
     # confidence/status classification (Phase 5 output)
-    confidence_high_threshold: float = 0.85
-    confidence_medium_threshold: float = 0.65
+    # Lowered 2026-08-25: known false positives cap at 0.62 (see
+    # valid_score_threshold note above), so anything >=0.80 is comfortably
+    # clear of coincidental matches -- real single-word-ASR-error cases
+    # (0.80-0.83) deserve HIGH_CONFIDENCE, not MEDIUM.
+    confidence_high_threshold: float = 0.80
+    # Raised 2026-08-25 to sit strictly above valid_score_threshold (0.70):
+    # previously (0.65) every valid match automatically scored above this,
+    # making LOW_CONFIDENCE unreachable through the real pipeline. Now
+    # [0.70, 0.75) genuinely means "barely cleared the bar."
+    confidence_medium_threshold: float = 0.75
     ambiguity_score_margin: float = 0.05
 
     # semantic fallback (Phase 7): only ever consulted when lexical/fuzzy

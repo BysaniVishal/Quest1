@@ -1,8 +1,485 @@
+This file has three parts, in the order the work actually happened:
+  PART A — early design-exploration prompts (conceptual, pre-implementation)
+  PART B — chronological development prompts from the Claude Code build session
+            (paraphrased log, same session as Part C)
+  PART C — the original verbatim record: the exact in-pipeline LLM prompt
+            template (semantic fallback) plus the Claude Code development log,
+            quoted closely where a prompt set a specific architectural constraint
+
+================================================================================
+PART A — DESIGN-EXPLORATION PROMPTS
+================================================================================
+
+1. My initial approach is to obtain a timestamped transcript from the video, search for the target dialogue, use the transcript timestamp to narrow down the relevant section of the video, and then locate the corresponding exact frame. Critically evaluate this approach, including its strengths, limitations, and assumptions. Do not propose a complete alternative architecture yet.
+
+2. Analyze the technical challenge of mapping a transcript timestamp to the exact video frame where the dialogue begins. Also evaluate whether linear search or binary search would be appropriate for refining the timestamp, and explain the conditions under which each approach would work.
+
+3. I observed that the provided video appears to contain spoken dialogue/audio rather than visible on-screen dialogue. Re-evaluate the proposed approach under the assumption that the target dialogue is spoken audio. Explain how this changes the processing pipeline and what components are now required.
+
+4. What are the best technical approaches for obtaining a timestamped transcript from a publicly accessible media URL? Compare relevant tools/models and consider that the evaluation may provide URLs from different platforms such as OK.ru and YouTube.
+
+5. Given the provided OK.ru URL:
+https://ok.ru/video/248244667877
+
+determine how the system can programmatically obtain the underlying video/audio so that it can subsequently be passed to a speech-to-text system. Focus only on media acquisition at this stage.
+
+6. Help me define the implementation plan incrementally. I want to validate each component independently before building the complete pipeline. Identify the first component I should implement and clearly define its expected input, output, and success criteria.
+
+7. I want to use an AI coding agent as an engineering assistant rather than generate the entire project at once. Help me implement the solution incrementally. For each stage, explain the important technical decisions, generate only the required implementation, and help me validate it before moving to the next stage.
+
+8. Help me implement the first stage: accept a public video URL such as the provided OK.ru URL and retrieve the underlying media/audio programmatically. Use an appropriate media extraction tool such as yt-dlp where applicable. Do not implement transcription, frame extraction, UI, or the rest of the pipeline yet.
+
+9. Test the media acquisition stage against the actual provided URL. If it fails, diagnose the root cause, explain what is happening internally, and suggest the smallest appropriate fix rather than rewriting the entire implementation.
+
+10. After each component is implemented, help me test it against the actual input, identify edge cases and failure modes, and determine whether the component is robust enough to proceed to the next stage.
+
+11. As the implementation evolves, keep track of the engineering decisions, assumptions, tools/models used, prompts given to AI agents, and reasons for choosing each approach so that these can later be documented and defended during the Quest1 evaluation.
+
+================================================================================
+PART B — CHRONOLOGICAL DEVELOPMENT PROMPTS (paraphrased log)
+================================================================================
+
+These are the main prompts/questions used during development. They are kept
+in roughly chronological order to show how the design evolved through
+questioning, testing, debugging, and validation. This is a paraphrased,
+self-written summary of the same Claude Code session recorded verbatim in
+Part C below (item 2) -- the two overlap in coverage but Part C is the
+authoritative record where wording matters.
+
+
+1. UNDERSTANDING THE OVERALL APPROACH
+--------------------------------------
+
+I want to understand the overall flow of the program in very simple terms.
+
+Can you explain:
+
+- We download the video
+- Make the transcript
+- How do we make the indexes?
+- Where from the query are we going to the least frequent word?
+- How is frequency calculated?
+- What exactly is being indexed?
+- Once we find something like "stagnation", how do we get to that particular
+  place in the transcript?
+- After getting there, how do we move forward/backward and perform fuzzy
+  matching?
+- How do we finally get the exact frame?
+
+Explain it like I'm a small kid because I want complete clarity on the
+architecture.
+
+
+2. UNDERSTANDING 1-, 2-, AND 3-WORD ANCHORS
+--------------------------------------------
+
+Aren't we doing something like 3-word together, then 2-word, then 1-word
+and checking them?
+
+Does the current code actually generate 1-word, 2-word, and 3-word anchors?
+
+If we generate all three types, how are they actually used during searching?
+
+For example, if "stagnation" is found at one indexed position, are we then
+creating 1-word, 2-word, and 3-word searches around that position, or has
+the 1/2/3-word logic already happened before retrieval?
+
+I want to understand exactly where the 1/2/3-word logic happens.
+
+
+3. VERIFY THE ACTUAL CODE
+-------------------------
+
+Please inspect the actual code and confirm:
+
+- Does it generate all 1/2/3-word anchors?
+- How many candidates are generated for:
+  "My mind rebels at stagnation"?
+- How is frequency calculated for a unigram?
+- How is frequency calculated for a bigram/trigram?
+- Are all generated anchors actually searched?
+- If not, exactly which ones are searched?
+- Why are three rarest single words plus one rarest overall candidate used?
+- If a rare 3-word anchor is selected together with a unigram, are both
+  searched?
+- How are their resulting positions combined?
+
+
+4. QUESTIONING "3 UNIGRAMS + 1 OVERALL"
+---------------------------------------
+
+Why are we taking the three rarest single words plus one rarest overall
+anchor?
+
+Wouldn't it be simpler to take the minimum-frequency anchor across all
+1/2/3-word candidates, excluding frequency-zero candidates, and search that?
+
+If a 3-word anchor is rarer than a single word, why aren't we just taking
+the rarest ones overall?
+
+Why do we specifically reserve three slots for single words?
+
+How is the "one rarest overall" anchor chosen?
+
+Are all four selected anchors actually searched?
+
+
+5. UNDERSTANDING HOW THE SEARCH RESULTS COMBINE
+-----------------------------------------------
+
+When multiple anchors are searched and each gives us transcript positions,
+what exactly does "unioned" mean?
+
+If "stagnation" finds position X and another anchor finds position Y, are
+both positions searched?
+
+Does the system search all four anchor results separately and then combine
+all the candidate locations?
+
+Please explain this simply.
+
+
+6. TESTING THE REAL OK.RU CASE
+------------------------------
+
+Use the real target:
+
+"My mind rebels at stagnation"
+
+and the actual OK.ru video.
+
+Show me what the system actually sees in the transcript.
+
+The ASR may say something like:
+
+"My mind reveals its stagnation."
+
+How does the current retrieval/matching system still find the correct
+location despite the ASR error?
+
+Show the actual anchor frequencies, selected anchors, candidate position,
+local transcript window, fuzzy score, timestamp, and final frame.
+
+
+7. QUESTIONING WHETHER THE ASR MODEL IS THE PROBLEM
+----------------------------------------------------
+
+The dialogue is not coming out correctly in the transcript.
+
+Will changing the ASR model improve this?
+
+Before changing anything, compare tiny.en and base.en on the actual production
+search_dialogue code.
+
+I want to know whether the model choice affects localization, not just
+whether the transcript looks better.
+
+Do not change production code yet.
+
+
+8. UNDERSTANDING THE MODEL COMPARISON
+-------------------------------------
+
+If tiny.en and base.en both make the same transcription error, does that mean
+the problem is likely the audio quality rather than model size?
+
+Could the compressed 32kbps audio be contributing to the error?
+
+Is there a better ASR option than Whisper that we should investigate?
+
+I care about both accuracy and latency, so don't simply recommend the largest
+model.
+
+
+9. INVESTIGATING NON-WHISPER ASR OPTIONS
+----------------------------------------
+
+I want to evaluate whether there are better ASR options than our current
+faster-whisper tiny.en.
+
+Please research practical alternatives, including non-Whisper models.
+
+Compare them based on:
+
+- accuracy
+- latency
+- memory
+- model size
+- word-level timestamps
+- fast/natural speech
+- proper nouns
+- CPU practicality
+- integration difficulty
+
+I don't want to blindly choose a larger model. I want to know which models
+are actually worth testing for this project.
+
+Do not modify production code yet.
+
+
+10. FAIR ASR BENCHMARK
+----------------------
+
+Run a clean comparison using the same audio for:
+
+- faster-whisper tiny.en
+- faster-whisper base.en
+- faster-whisper large-v3-turbo
+
+Use real YouTube videos with natural spoken English.
+
+For each model report:
+
+- actual transcript
+- transcription errors
+- runtime
+- peak RAM
+- model size
+- word-level timestamps
+
+Make sure each model is genuinely loaded and that no cached transcript or
+fallback model is being reused.
+
+Do not modify production code.
+
+
+11. UNDERSTANDING WHAT THE BENCHMARK MEANS
+------------------------------------------
+
+Based on the benchmark results, which model is actually better for our
+project?
+
+I don't want "larger is better."
+
+Compare accuracy against latency and resource usage.
+
+Is base.en a better practical choice than tiny.en?
+
+Is large-v3-turbo accurate enough to justify its much higher runtime and RAM?
+
+Should we test a genuinely different architecture such as NVIDIA Parakeet?
+
+
+12. INVESTIGATING THE "LET'S GO DARCY" CASE
+--------------------------------------------
+
+Investigate the real "Let's go Darcy" failure.
+
+First determine whether Whisper actually transcribed "Let's go" around the
+true location.
+
+Then determine whether the retrieval stage found the correct location.
+
+If retrieval found the correct location, why did verification reject it?
+
+Show:
+
+- actual ASR transcript
+- anchor frequencies
+- selected anchors
+- candidate locations
+- local transcript windows
+- word alignments
+- coverage
+- scores
+- final selected candidate
+
+I want to know whether this is an ASR problem or an algorithm problem.
+
+
+13. DISCOVERING THE SECONDARY SCORING PROBLEM
+--------------------------------------------
+
+If a better ASR model makes the true location score much higher, but the
+system still chooses an earlier false positive, explain why.
+
+In particular, investigate whether sub-threshold lexical similarity is
+contributing partial credit.
+
+For example:
+
+target:
+"Let's go Darcy"
+
+candidate:
+"Please go ..."
+
+Does "please" receive partial similarity credit even though it doesn't
+actually count as a matched word?
+
+Could this be causing a false positive to pass the threshold?
+
+
+14. QUESTIONING THE THRESHOLD
+-----------------------------
+
+Can we solve the ambiguity by increasing the valid-match threshold and using
+a better ASR model?
+
+I want accuracy to be the priority.
+
+Before changing the threshold, test several values such as 0.65, 0.70, 0.75,
+and 0.80 against:
+
+- exact matches
+- ASR substitutions
+- missing-word cases
+- inserted-word cases
+- Armstrong/Apollo example
+- OK.ru example
+- Darcy true location
+- Darcy false positives
+- existing regression tests
+
+Find where legitimate matches start getting rejected.
+
+Don't choose a threshold arbitrarily.
+
+
+15. UNDERSTANDING THE THRESHOLD RESULTS
+----------------------------------------
+
+The real results show:
+
+- legitimate cases are generally >= 0.80
+- Darcy false positives are <= 0.6212
+- true Darcy with large-v3-turbo = 0.8093
+- OK.ru = 0.8135
+- Apollo = 0.879
+- an existing regression case = 0.800
+
+What threshold gives the best separation?
+
+Would 0.70 be safer than 0.75?
+
+Why can't we simply use >0.80?
+
+Explain the trade-off between rejecting false positives and retaining
+legitimate ASR-corrupted matches.
+
+
+16. CHOOSING THE PRODUCTION CONFIGURATION
+------------------------------------------
+
+I want accuracy to be the priority, but I don't want the system to become
+unreasonably slow.
+
+Based on the actual benchmark, compare:
+
+- tiny.en + 0.60
+- base.en + 0.70
+- large-v3-turbo + 0.70
+
+Which one would you choose for this project and why?
+
+Consider the actual runtime on long videos, memory, disk usage, transcription
+accuracy, and end-to-end frame localization accuracy.
+
+
+17. IMPLEMENT THE VALIDATED CHANGES
+-----------------------------------
+
+Let's implement the chosen configuration:
+
+- use faster-whisper base.en
+- increase valid_score_threshold from 0.60 to 0.70
+
+Do not change the retrieval algorithm, fuzzy scoring formula, onset refinement,
+PTS/frame mapping, or output contract.
+
+Run the full offline test suite after the change.
+
+Then rerun the real OK.ru and YouTube reference cases.
+
+
+18. INVESTIGATING LATENCY
+--------------------------
+
+The accuracy is improving, but the full-video ASR can take a long time.
+
+What can we do about latency without sacrificing accuracy?
+
+Analyze whether we can use:
+
+- transcript caching
+- faster initial ASR
+- two-stage ASR
+- candidate-first retrieval
+- stronger ASR only on a small audio neighborhood
+- reuse of downloaded media
+- avoiding repeated transcription of the same video
+
+Explain which optimization is safest for our architecture.
+
+Do not change the implementation yet.
+
+[Note: this was a conceptual discussion only -- no latency-optimization change
+(caching, two-stage ASR, etc.) was actually implemented in this Claude Code
+session. Not reflected in Part C's verbatim log. Verify separately if this
+needs to be presented as completed work.]
+
+
+19. FINAL VALIDATION
+--------------------
+
+Before considering the project complete, validate the complete pipeline.
+
+For every failure, determine which stage failed:
+
+VIDEO → AUDIO → ASR → INDEX → ANCHOR RETRIEVAL →
+FUZZY VERIFICATION → ONSET → FRAME
+
+Do not fix problems with arbitrary offsets or unrelated changes.
+
+Use the actual evidence to identify the failing stage first.
+
+Verify:
+
+- timestamp correctness
+- frame correctness
+- transcript text
+- image output
+- frame/timestamp/image consistency
+- false-positive handling
+- ambiguous-match handling
+- offline test suite
+- real OK.ru example
+- real YouTube example
+
+
+20. FINAL ENGINEERING REVIEW
+----------------------------
+
+Review the final architecture and explain:
+
+- why the ASR model was chosen
+- why 1/2/3-word anchors are used
+- why rare anchors are useful
+- why multiple unigram anchors are retained
+- how fuzzy verification handles ASR errors
+- why the threshold was calibrated rather than arbitrarily selected
+- how false positives are handled
+- why earliest valid occurrence is selected
+- how exact frame mapping uses PTS
+- what the latency/resource trade-offs are
+- what the known limitations are
+- what future optimizations could improve latency without compromising
+  accuracy
+
+================================================================================
+PART C — VERBATIM RECORD (authoritative)
+================================================================================
+
+
 Dialogue-to-Exact-Video-Frame Finder — AI/LLM Prompts
 ======================================================
 
 Per the Quest1 Submission Process Flowchart, this file records every prompt
-that materially influences the solution, including relevant iterations.
+that materially influences the solution, including relevant iterations. Item
+1 below is the actual in-pipeline LLM prompt (quoted verbatim from the source
+code). Item 2 is the Claude Code development log for this session, listed
+chronologically and quoted closely wherever a prompt set a specific
+architectural constraint -- this is the authoritative record for Part B above.
 
 ------------------------------------------------------------------------
 1. Semantic fallback candidate selection (src/dialogue_frame_finder/semantic.py)
@@ -190,3 +667,64 @@ kept in full.
 2.10 This file
   "can u update prompts.txt with the prompts i used in this chat" -- this
   section is the result.
+
+2.11 Post-Version-1 threshold/ASR investigation and calibration
+  After "Version 1" was committed and pushed, a new investigation phase began
+  on a real diagnosed failure (a YouTube video, target "Let's go Darcy",
+  where a spurious short match won over the true later occurrence):
+
+  "I think we should investigate a stricter verification threshold combined
+  with a stronger ASR model... However, I do NOT want to blindly change the
+  threshold. Please investigate the current scoring/threshold design and
+  test what happens if we raise the valid-match threshold. Use: 1. Existing
+  offline regression tests 2. Armstrong/OK.ru case 3. Darcy case with
+  large-v3-turbo transcript 4. Existing ambiguous-match/false-positive
+  tests. Try several reasonable threshold values and report: - Which valid
+  cases would be rejected - Which false positives would be rejected -
+  Whether any existing tests regress - The score distributions of true vs
+  false candidates. Also evaluate whether we should have TWO thresholds...
+  Do not modify production code yet." This produced a real, evidence-based
+  report (no code changed): false positives capped at score 0.6212, true
+  positives at 0.80+, a clean gap between them, and 0.80 identified as a
+  hard regression ceiling (`test_search_dialogue_returns_earliest_
+  occurrence_not_highest_scoring`).
+
+  "i think as latency is also a factor, we should go to base.en so we can
+  get better accuracy, not compromising latency also too much and lets
+  increase threshold to 0.7 or 0.75 like u said, what do u say?" --
+  clarifying questions were asked (the actual constructor default was found
+  to be `"base"`, the multilingual model, not `tiny.en`/`base.en` as
+  earlier assumed) and answered: fix to `base.en`; threshold to 0.70.
+  Implemented, verified (208/208 tests, real Darcy re-check confirming the
+  false positive is now rejected and the true occurrence is chosen).
+
+  "still i feel like its necessary to handle both accuracy and for base.en
+  case are we getting darcy thing correctly just want to know" -- led to a
+  real `base.en` transcription of the cached Darcy audio, which showed
+  `base.en` actually loses the key word ("Go" misheard as "our") at the
+  true location entirely -- reported honestly as a real limitation, not
+  glossed over.
+
+  "ok leave the darcy case fully, in general, what model u want me to use
+  and what threshold u want to keep, which is best for interview
+  purpose?? I will go ahead with what u suggest" -- `base.en` + threshold
+  0.70 recommended and confirmed as the final choice, weighing latency,
+  memory, and accuracy specifically for a live interview-demo context.
+
+  "i want to keep high confidence as 0.80 what u think?" and "medium should
+  be greater than valid right like 0.75?" -- both real, independently
+  user-driven calibration insights (the second one caught a genuine latent
+  bug: `confidence_medium_threshold` had drifted below `valid_score_
+  threshold`, making `LOW_CONFIDENCE` unreachable). Both implemented
+  (`confidence_high_threshold=0.80`, `confidence_medium_threshold=0.75`)
+  after checking for test regressions; one test's hardcoded scores were
+  intentionally updated to match the new, correct bucketing.
+
+  "should we commit these changes also, if something happens we can go
+  back to version 1 right" -- confirmed `Version 1` remains an intact,
+  separate commit regardless of further commits on top.
+
+  "pls update the approach.md and prompts.txt as per, also a image would
+  be good in approach so they can easily understand my thinking" -- this
+  entry, and the architecture/decision diagrams added to APPROACH.md, are
+  the result.
