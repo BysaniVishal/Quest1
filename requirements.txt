@@ -1,0 +1,18 @@
+pytest>=7.0
+rapidfuzz>=3.0
+numpy>=1.24
+av>=11.0
+Pillow>=10.0
+yt-dlp>=2024.1
+
+# faster-whisper: ASR dependency, only imported lazily by asr.py's real
+# adapter -- not required to run the offline test suite (pytest / -m unit /
+# -m integration), only for -m e2e or actually running the pipeline.
+# Despite earlier concern this does NOT pull in torch on Windows CPU --
+# ctranslate2 is its inference backend; installed size is small (~20MB).
+faster-whisper>=1.0
+
+# anthropic: only imported lazily by semantic.py's ClaudeSemanticMatcher,
+# used solely as the optional semantic fallback tier (design.docx section
+# 15) -- never required for lexical/fuzzy retrieval or the offline suite.
+anthropic>=0.40

@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+# Default run must stay offline (test-plan.docx section 14): e2e tests hit
+# real network/ASR and are opt-in only, via `pytest -m e2e`.
+addopts = "-m 'not e2e'"
+markers = [
+    "unit: pure logic tests, no network/filesystem/media dependencies",
+    "integration: tests using local audio/video fixtures, no network",
+    "e2e: tests against real network/media sources",
+]

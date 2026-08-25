@@ -1,0 +1,40 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude Code session/agent state -- local tooling, not part of the submission
+.claude/
+
+# runtime output location (design.docx section 16) -- generated, not committed
+outputs/*
+!outputs/.gitkeep
+!outputs/images/
+outputs/images/*
+!outputs/images/.gitkeep
+
+# downloaded media and yt-dlp's own partial-download artifacts (never commit;
+# large, likely copyrighted -- see test-plan.docx)
+*.mp4
+*.mkv
+*.webm
+*.wav
+*.part
+*.ytdl
+
+# supplied reference specs -- not part of the source submission
+requirements.docx
+design.docx
+test-plan.docx
+
+# secrets -- never commit real credentials
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
+
+.venv/
+venv/

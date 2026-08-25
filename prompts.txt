@@ -1,0 +1,192 @@
+Dialogue-to-Exact-Video-Frame Finder — AI/LLM Prompts
+======================================================
+
+Per the Quest1 Submission Process Flowchart, this file records every prompt
+that materially influences the solution, including relevant iterations.
+
+------------------------------------------------------------------------
+1. Semantic fallback candidate selection (src/dialogue_frame_finder/semantic.py)
+------------------------------------------------------------------------
+
+Role in the pipeline: OPTIONAL, non-authoritative on timing. This prompt is
+only sent when lexical/fuzzy indexed retrieval (the primary path) found
+either no confident match at all, or a genuinely ambiguous one (two
+candidates scoring nearly identically). Per design.docx section 15, the
+LLM's role is limited to semantic transcript matching among ALREADY-LOCATED
+candidate windows -- it is never asked for, and never permitted to invent,
+a timestamp, frame number, or word it wasn't given. Its response only
+selects which candidate (by an id the code generated, not the model) is
+the best match; the actual onset timestamp is still derived afterward from
+that candidate's own word-level ASR alignment via the same verify_window
+path used everywhere else. If the model names a candidate_id that was never
+offered to it, the code rejects the answer outright (see
+parse_semantic_response) rather than trusting it.
+
+Model used: claude-sonnet-5 (Anthropic API), temperature=0 for determinism.
+
+Exact prompt template (see build_semantic_prompt in semantic.py --
+{target_text} and {candidate_list} are filled in at call time; the
+candidate list format is "- id=<id> start=<seconds>s text=\"<transcript
+text for that window>\""):
+
+    Given a target dialogue and timestamped transcript candidates, select
+    the candidate that most likely represents the target. Do not invent
+    words or timestamps. Return structured JSON containing candidate_id,
+    match_confidence, and rationale. If the evidence is insufficient,
+    return NO_CONFIDENT_MATCH.
+
+    Target dialogue: "{target_text}"
+
+    Candidates:
+    {candidate_list}
+
+    Respond with ONLY a JSON object, no other text, in exactly this shape:
+    {"candidate_id": "<id or null>", "match_confidence": <0.0-1.0>, "rationale": "<short reason>"}
+    Use candidate_id null and match_confidence 0.0 if none of the
+    candidates plausibly represent the target (NO_CONFIDENT_MATCH).
+
+Iterations / design notes:
+- This is the exact constrained-matching template from design.docx section
+  15's worked example ("select the candidate that most likely represents
+  the target... Do not invent words or timestamps... Return structured
+  JSON containing candidate_id, match_confidence, and rationale... If the
+  evidence is insufficient, return NO_CONFIDENT_MATCH"), adapted only to
+  fill in the concrete candidate-list format the code actually produces.
+- candidate_id is deliberately an opaque code-generated string (c0, c1,
+  ...), not a timestamp or transcript excerpt, so the model has nothing
+  timestamp-shaped to hallucinate a variant of.
+- match_confidence returned by the model is used as this candidate's
+  reported confidence score in the final output -- appropriate specifically
+  because this path only runs when the lexical score was already
+  established as insufficient by construction (no-match or ambiguous).
+
+------------------------------------------------------------------------
+2. Development assistance (Claude Code / Sonnet 5)
+------------------------------------------------------------------------
+
+Claude Code (Sonnet 5) was used as the coding assistant that designed and
+implemented this entire solution, under interactive direction and review at
+every phase. This is developer assistance, not a component of the running
+pipeline (see design.docx section 15 / requirements.docx section 6, which
+concern LLM usage *inside* the solution itself -- item 1 above) -- but the
+prompts below materially shaped the architecture and are recorded here for
+full transparency into how the solution was built, per the user's explicit
+request. Listed chronologically; paraphrased where a prompt was very long,
+quoted closely where it set a specific architectural constraint. Routine
+"looks good, continue" acknowledgments are omitted; substantive direction is
+kept in full.
+
+2.1 Initial analysis (no code)
+  "I have three project specification documents in this folder:
+  @requirements.docx @design.docx @test-plan.docx. Read all three documents
+  carefully. For this step ONLY, do not write code... [12 analysis
+  questions: problem definition, I/O contract, architecture, dialogue
+  localization, frame determination, ASR-error/multi-candidate handling,
+  ambiguity handling, YouTube generalization, test requirements, repo
+  structure, risks/assumptions, ambiguities in the specs]... interpret the
+  target dialogue as SPOKEN dialogue in the video's audio track. Do not
+  assume ... visually displayed as text/subtitles... give me a phased
+  implementation plan for building the project."
+
+2.2 Architecture revision: indexed retrieval (no code)
+  "Before you proceed to Phase 0 or write any code, I want to revise and
+  clarify the dialogue-search algorithm based on further reasoning I have
+  done... I do NOT want a brute-force sliding-window search over the entire
+  transcript to be the primary retrieval mechanism." Specified, in detail:
+  build an in-memory inverted transcript index (word -> occurrences with
+  position/start/end); rank target words/phrases as search anchors by
+  transcript-local rarity ("should NOT depend on one distinctive word
+  always existing"); retrieve candidates from the index, then verify each
+  by comparing the ENTIRE target phrase against a local neighborhood
+  (tolerant of ASR insertions/deletions/substitutions); use fuzzy retrieval
+  only as a fallback when indexed retrieval fails; "Find ALL sufficiently
+  strong valid occurrences, not just the highest-scoring... Do NOT simply
+  choose the highest similarity score" -- the earliest valid occurrence in
+  video time must be returned; onset must come from the first target
+  word's own timestamp, refined locally by audio analysis; frame mapping
+  must use decoder PTS, never timestamp*FPS. Requested: agreement/critique
+  of this approach vs. sliding-window, weaknesses + fallbacks, index
+  representation, neighborhood selection, multi-occurrence handling, ASR-
+  error handling, onset->frame mapping, then a revised 9-phase plan
+  (feasibility / index+retrieval / verification / audio alignment / frame
+  extraction / full pipeline / testing / real E2E / calibration+docs) and
+  synthetic test cases for 8 named scenarios. "Do not start implementation
+  until I explicitly tell you to proceed."
+
+2.3 Onset-refinement correction (no code)
+  "Do not assume VAD is the primary mechanism for determining the exact
+  dialogue onset. The actual requirement is the onset of the FIRST TARGET
+  WORD, not the beginning of general speech... word-level ASR/alignment for
+  the first target word is the primary timing signal; local audio/VAD/
+  energy analysis may refine or validate that estimate; VAD must never move
+  the result to an earlier unrelated speech region simply because speech
+  was already occurring." Also requested: an evaluation of whether a
+  separate forced-alignment model is needed vs. faster-whisper timestamps +
+  local refinement, and two specific synthetic test cases -- target
+  following other speech with no pause ("Well, I think MY MIND rebels at
+  stagnation"), and target starting while another speaker is already
+  talking.
+
+2.4 Phase-by-phase execution
+  "1" (approve plan, begin) -- "Go ahead with Phase 1." -- "go ahead with
+  phase 2" -- "Go ahead with Phase 3." -- "Go ahead with Phase 4." -- "Go
+  ahead with Phase 5." -- "Go ahead with Phase 6." (each followed by
+  independent review of the resulting code/tests before the next).
+
+2.5 Semantic-fallback scope decision
+  Asked to decide, via a clarifying question, whether to add an LLM
+  semantic-fallback tier (found missing relative to design.docx/
+  requirements.docx during a Phase 6 audit): "Add it as a new phase
+  (Recommended)" was selected. -- "Go ahead with Phase 8" (after the new
+  Phase 7 was implemented).
+
+2.6 Output-contract compliance re-check (no redesign)
+  "Before starting Phase 9, do one final output-contract verification
+  against the Quest1 problem statement... verify: 1. Timestamp is the
+  timestamp of the identified video frame. 2. Frame number is reported when
+  reliably applicable... 3. Text is explicitly present... 4. The actual
+  corresponding extracted frame image is saved... 5. Timestamp, frame
+  number, and image all refer to the same video instant... Do not redesign
+  the core algorithm or change the retrieval/onset/frame-mapping
+  architecture. This is only a final compliance check... If anything is
+  missing, fix only the output-contract issue... Then show me the exact
+  final OK.ru and YouTube outputs."
+
+2.7 Usability: output image location
+  "I want all generated runtime output images to be saved inside the
+  project's existing: outputs/images/ folder, rather than inside Claude's
+  temporary scratchpad directories... Keep the existing Timestamp, Frame,
+  Text, and Image output contract unchanged... Do not change the
+  retrieval, ASR, onset, PTS/frame-mapping, or matching architecture...
+  run the OK.ru example once and confirm the image is actually present
+  inside outputs/images/ and can be opened."
+
+2.8 ASR model comparison (evaluation only, no permanent change)
+  "Before Phase 9, I want to resolve the ASR transcription-quality
+  question, but do NOT change the working system yet... perform a
+  controlled comparison using the same OK.ru example/audio: 1. Keep
+  tiny.en as the baseline. 2. Test... base.en first; if practical, also
+  evaluate small.en. 3. Do NOT retranscribe the entire 54-minute video
+  unnecessarily. Use the already identified relevant audio neighborhood...
+  4. Compare the actual transcription... 5. Report: model / transcription
+  produced / whether the phrase is correctly recognized / runtime /
+  resource impact / whether it affects the already-correct frame
+  localization... Do not modify the production/default model yet... Show
+  me the comparison and recommendation first." Followed by: "Keep tiny.en,
+  proceed to Phase 9."
+
+2.9 Live troubleshooting (real user run, real environment issues)
+  Pasted a real failed run's console output and asked: "im getting this
+  error when i run in my normal CLI, can u tell me steps to run so i can
+  see if i ran correctly" -- leading to diagnosis of a disk-space crisis and
+  an SSL/downloader fix. Follow-ups: "can we move project to E drive or
+  something or would u rather prefer me cleaning up C drive" -- "i have
+  9-10gb free can i run now and try in cli also guide me with comments" --
+  "why the --format without it wont it work?" -- "so how can i run in
+  interview?" -- pasted a second real failure (SSL cert error under
+  --format worst) that led to broadening the OK.ru TLS-verification fix to
+  also cover yt-dlp's native downloader, not only its ffmpeg-backed one.
+
+2.10 This file
+  "can u update prompts.txt with the prompts i used in this chat" -- this
+  section is the result.
