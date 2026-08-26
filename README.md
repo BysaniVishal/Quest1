@@ -1,58 +1,174 @@
 # Dialogue-to-Exact-Video-Frame Finder
 
-Given a publicly accessible video URL and a target spoken dialogue, locates the exact/first
-video frame where that dialogue begins, and returns its timestamp, frame number (where
-applicable), the identified dialogue text, and the corresponding frame as an image.
+Given a publicly accessible video URL and a target spoken dialogue, this system finds
+the **earliest occurrence of that dialogue**, determines where it begins, and returns:
 
-The dialogue is located by its **spoken audio**, not by on-screen text/subtitles — see
-[APPROACH.md](APPROACH.md) for the full design and algorithm.
+- **Timestamp**
+- **Frame number** (where available)
+- **Actually transcribed dialogue**
+- **Extracted frame image**
+- **Confidence / status**
 
-Two ways to run it: a **CLI** (`python -m dialogue_frame_finder ...`) and a **browser-based
-Web UI** — both call the exact same underlying pipeline, no logic duplicated between them.
+The system searches the **spoken audio**, not on-screen text.
 
-## Setup
+It is designed around three core ideas:
 
-Requires Python 3.10+.
+1. **Efficient retrieval** — build an inverted index over the transcript and search
+   using rare, selective anchors instead of scanning every transcript window.
+2. **Accuracy-aware verification** — candidate matches are verified using word-level
+   alignment, coverage, contiguity, confidence thresholds, and earliest-occurrence
+   selection.
+3. **Accurate frame mapping** — the final dialogue onset is mapped to the video's
+   actual frame timestamps using PTS rather than assuming a constant FPS.
+
+An optional **caption-assisted path** can reduce ASR latency when captions are available,
+while preserving ASR as the source of final timing.
+
+The project is available through both a **CLI** and a **browser-based Web UI**.
+Both interfaces call the same underlying pipeline — there is no duplicated search or
+frame-finding logic.
+
+See [`APPROACH.md`](APPROACH.md) for the detailed architecture, algorithmic decisions,
+accuracy trade-offs, profiling results, and design rationale.
+
+---
+
+## What the system does
+
+```text
+Video URL + target dialogue
+        │
+        ▼
+   Media resolution
+        │
+        ▼
+   Audio extraction
+        │
+        ▼
+ ┌───────────────────────────────┐
+ │ Caption-assisted path?        │
+ │                               │
+ │ Captions → coarse location    │
+ │          → local ASR          │
+ │          → confirmation       │
+ └──────────────┬────────────────┘
+                │
+       unavailable / unconfirmed
+                │
+                ▼
+       Full-video ASR
+                │
+                ▼
+       Transcript indexing
+                │
+                ▼
+      Candidate retrieval
+       exact → fuzzy → scan
+                │
+                ▼
+       Phrase verification
+                │
+                ▼
+      Earliest valid match
+                │
+                ▼
+       Onset refinement
+                │
+                ▼
+      PTS-aware frame mapping
+                │
+                ▼
+        Extract + save frame
+                │
+                ▼
+ Timestamp / Frame / Text / Image
+```
+
+### Important design boundary
+
+Captions are **not trusted as the final timing source**.
+
+When captions are available, they are used only to identify a coarse region where the
+dialogue may occur. The actual audio in that region is then transcribed using the same
+ASR pipeline used elsewhere.
+
+The final timestamp and frame therefore still come from **real ASR timestamps + audio
+onset refinement + PTS-aware frame mapping**.
+
+If captions are unavailable or cannot be independently confirmed, the system falls back
+to the original full-video ASR pipeline.
+
+---
+
+# Setup
+
+Requires **Python 3.10+**.
+
+From the project root:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`requirements.txt` covers everything needed to run the pipeline, including `yt-dlp`
-(media resolution), `av`/`Pillow` (audio/video decode and image saving), `rapidfuzz`
-(fuzzy text matching), and `faster-whisper` (speech-to-text). The optional LLM semantic
-fallback additionally needs `anthropic` (already listed) and an API key — see
-[Optional: semantic fallback](#optional-semantic-fallback) below; nothing else in the
-pipeline requires it.
+The core dependencies include:
 
-No `ffmpeg` binary on `PATH` is required — audio/video decoding goes through PyAV
-directly.
+* `yt-dlp` — video/media resolution
+* `faster-whisper` — speech recognition
+* `av` / PyAV — audio/video decoding
+* `Pillow` — frame image saving
+* `rapidfuzz` — fuzzy matching
+* `anthropic` — optional semantic fallback
 
-**Windows note:** if `faster-whisper`'s model download fails with a `WinError 1314`
-(symlink privilege), the pipeline already sets `HF_HUB_DISABLE_SYMLINKS=1` automatically
-before loading the model — no manual step needed.
+No `ffmpeg` binary on `PATH` is required. Audio/video decoding is handled through PyAV.
 
-**Before running the CLI**, the package needs `src/` on `PYTHONPATH` (it isn't pip-installed
-as a package — `pytest` already handles this itself via `pyproject.toml`, but a direct
-`python -m` invocation needs it set explicitly, once per terminal session):
+### Windows
+
+If the faster-whisper model download encounters:
+
+```text
+WinError 1314
+```
+
+the application already disables Hugging Face symlink creation automatically, so no
+manual symlink configuration should be necessary.
+
+### Set `PYTHONPATH`
+
+The project is run directly from the `src/` layout rather than installed as a package.
+
+#### PowerShell
 
 ```powershell
-# PowerShell (Windows)
 $env:PYTHONPATH = "src"
 ```
 
+#### bash / zsh
+
 ```bash
-# bash/zsh (macOS/Linux)
 export PYTHONPATH=src
 ```
 
-## Usage
+Set this once per terminal session.
+
+---
+
+# Quick Start — CLI
+
+From the project root:
 
 ```bash
-python -m dialogue_frame_finder <video_url> "<target dialogue>" [--output-dir outputs] [--format worst]
+python -m dialogue_frame_finder "<video_url>" "<target dialogue>"
 ```
 
-Example, using the supplied Quest1 reference case:
+For example:
+
+```bash
+python -m dialogue_frame_finder \
+  "https://ok.ru/video/248244667877" \
+  "My mind rebels at stagnation"
+```
+
+The supplied Quest1 reference case can also be run with:
 
 ```bash
 python -m dialogue_frame_finder \
@@ -61,129 +177,555 @@ python -m dialogue_frame_finder \
   --format worst
 ```
 
-`--format worst` is recommended: faster, smaller download, no effect on correctness
-(resolution doesn't matter to the pipeline — see `--help` for all flags). Omit it for a
-higher-quality source frame image.
+`--format worst` is useful when you want a smaller/faster media download.
+It does not change the dialogue-search algorithm.
 
-Example output (real run, default config — `base.en` ASR, `valid_score_threshold=0.70`):
+---
 
+# Example output
+
+```text
+Status     : HIGH_CONFIDENCE
+
+Timestamp  : 00:05:25.013
+Frame      : 7792
+Text       : "My mind rebels its stagnation."
+Image      : outputs/images/frame_325.013.png
+
+Confidence : 0.832
 ```
-Status    : HIGH_CONFIDENCE
-Timestamp : 00:05:25.013
-Frame     : 7792
-Text      : "My mind rebels its stagnation."
-Image     : outputs\images\frame_325.013.png
-Confidence: 0.832
-```
 
-`Text` is what was actually transcribed (here, a real ASR error — "its" instead of "at" —
-tolerated correctly), not the target phrase echoed back; see APPROACH.md §5. Exact
-`Frame`/`Timestamp` can shift slightly run-to-run; the identified *location* does not.
+`Text` is the **actual ASR transcription**, not the target dialogue echoed back.
 
-The same command works unmodified against a YouTube URL — provider-specific handling is
-isolated to media resolution only (APPROACH.md §3):
+In the run above, the target dialogue was "My mind rebels **at** stagnation," but ASR
+actually transcribed "rebels **its** stagnation" — a real, minor ASR error. The system
+still identified the correct occurrence because matching is designed to tolerate this
+kind of imperfection, rather than requiring an exact transcript match.
+
+The extracted frame and timestamp correspond to the same video instant.
+
+---
+
+# Caption-assisted latency optimization
+
+Caption assistance is **opt-in**:
 
 ```bash
 python -m dialogue_frame_finder \
-  "https://www.youtube.com/watch?v=J6jplPkbe8g" \
-  "one small step for man" \
-  --format worst
+  "<video_url>" \
+  "<target dialogue>" \
+  --use-captions
 ```
 
-## Optional: caption-assisted latency optimization
+When captions are available:
 
-`--use-captions` is opt-in (off by default) — when a video has captions, they're used to
-locate a candidate region, then ASR runs on just that local audio window instead of the
-whole video. Captions are **never** used for the final timestamp/frame — only real ASR is.
-Falls back automatically to the normal full-video path if captions are unavailable or don't
-confirm a match. See APPROACH.md §10 for the design, the real measured speedup, and a real
-measured limitation.
-
-```bash
-python -m dialogue_frame_finder "<url>" "<target dialogue>" --use-captions
+```text
+Captions
+   ↓
+Coarse dialogue localization
+   ↓
+Identify candidate caption block
+   ↓
+Extract a small local audio window
+   ↓
+Run real ASR on that window
+   ↓
+Verify the dialogue again
+   ↓
+Continue through the normal pipeline
 ```
 
-Exit code is `0` on a confident/ambiguous match, `1` on `NO_CONFIDENT_MATCH`.
+This avoids transcribing the entire video when captions can successfully localize the
+dialogue.
 
-## Web UI
+### Accuracy boundary
 
-A browser-based alternative to the CLI. It's a thin layer over the same `run_pipeline` the
-CLI uses — no matching/verification/ASR logic is duplicated. Optional dependency, kept out
-of `requirements.txt`:
+The caption timestamp itself is **not used as the final timestamp**.
+
+The local audio is re-transcribed using the same ASR adapter, and the resulting
+word-level ASR timestamps are used for the final onset and frame mapping.
+
+### Fallback
+
+If:
+
+* captions are unavailable,
+* caption fetching fails,
+* the target cannot be located in the captions, or
+* local ASR cannot independently confirm the candidate,
+
+the system automatically falls back to:
+
+```text
+Full-video ASR
+     ↓
+Normal indexed retrieval
+     ↓
+Normal verification
+     ↓
+Normal onset/frame mapping
+```
+
+Therefore the caption feature is a latency optimization, not a replacement for the
+accuracy-critical ASR pipeline.
+
+See [`APPROACH.md`](APPROACH.md) §10 for the implementation details and measured results.
+
+---
+
+# Why indexed retrieval?
+
+A naive approach would compare the target dialogue against every possible transcript
+window.
+
+Instead, the system builds an in-memory inverted index:
+
+```text
+word → transcript positions
+```
+
+Target words are ranked by how selective they are in the transcript.
+
+For example:
+
+```text
+target:
+"the spacecraft entered lunar orbit"
+
+common word:
+"the"        → many occurrences
+
+selective word:
+"spacecraft" → few occurrences
+
+rare n-gram:
+"lunar orbit" → potentially very selective
+```
+
+The system uses selective anchors to retrieve a small set of candidate locations.
+
+Candidate retrieval has multiple tiers:
+
+```text
+Exact anchor
+     ↓
+Fuzzy anchor
+     ↓
+Bounded scan
+```
+
+This gives the system a fast path when the ASR transcript contains useful anchor words,
+while still providing recall-oriented fallbacks when ASR corrupts those anchors.
+
+---
+
+# Why verification is separate from retrieval
+
+An index hit is **not considered a match**.
+
+Each candidate is verified against the entire target phrase using word-level alignment.
+
+The verification score combines:
+
+```text
+Lexical similarity
+Coverage
+Contiguity
+```
+
+A candidate must pass the configured validity threshold before it can be selected.
+
+This separation is important because an isolated matching word should not be enough to
+declare that the entire dialogue was found.
+
+---
+
+# Multiple occurrences
+
+The target dialogue may occur more than once.
+
+The system therefore:
+
+1. Finds all valid candidate occurrences.
+2. Filters candidates using the validity threshold.
+3. Selects the **earliest valid occurrence by video time**.
+4. Does not simply choose the highest-scoring occurrence.
+
+This distinction matters for repeated phrases such as dialogue in a chorus, refrain,
+interview question, or repeated sentence.
+
+If another occurrence has a sufficiently similar score to the selected occurrence,
+the result can be reported as:
+
+```text
+AMBIGUOUS_MATCH
+```
+
+rather than pretending the system has certainty.
+
+---
+
+# Exact frame selection
+
+The final dialogue onset comes from the ASR word timestamp corresponding to the first
+target word.
+
+A bounded audio refinement step can then adjust that timestamp when a genuine acoustic
+transition is present.
+
+The system does **not** calculate:
+
+```text
+frame = timestamp × FPS
+```
+
+Instead, the video is decoded using its actual presentation timestamps (PTS), and the
+system selects:
+
+```text
+first decoded frame with PTS >= refined dialogue onset
+```
+
+This matters for sources where frame timing is not perfectly represented by a simple
+constant-FPS calculation.
+
+---
+
+# Accuracy and uncertainty handling
+
+The system explicitly distinguishes between different confidence states:
+
+```text
+HIGH_CONFIDENCE
+MEDIUM_CONFIDENCE
+LOW_CONFIDENCE
+AMBIGUOUS_MATCH
+NO_CONFIDENT_MATCH
+```
+
+A `NO_CONFIDENT_MATCH` result does not fabricate a timestamp or frame.
+
+The semantic fallback, when enabled, is also constrained:
+
+* It is used only when lexical matching fails or is ambiguous.
+* It chooses among candidates already located by the system.
+* It cannot invent a timestamp.
+* The final onset is still calculated using the normal verification/onset pipeline.
+
+The exact semantic fallback prompt is recorded in [`prompts.txt`](prompts.txt).
+
+---
+
+# ASR model
+
+The current default is:
+
+```text
+faster-whisper
+model: base.en
+VAD: enabled
+word-level timestamps: enabled
+```
+
+VAD filtering is important for long videos because it avoids processing large amounts of
+silence as one continuous audio input.
+
+The ASR model remains configurable internally, and the Web UI exposes model selection
+through its Advanced options.
+
+The CLI currently uses the default model and does not expose an `--asr-model` flag.
+
+See [`APPROACH.md`](APPROACH.md) §8 for the model comparison and design rationale.
+
+---
+
+# Performance
+
+The system was profiled using real video runs rather than assuming that indexing or
+retrieval would be the bottleneck.
+
+A controlled profiling run measured approximately:
+
+| Stage                                           |     No captions |        Captions |
+| ----------------------------------------------- | --------------: | --------------: |
+| Total                                           |          86.17s |          32.88s |
+| ASR                                             | 60.975s / 70.8% |  3.426s / 10.4% |
+| Download                                        | 16.815s / 19.5% | 16.653s / 50.6% |
+| Frame extraction                                |   7.190s / 8.3% |  7.349s / 22.3% |
+| Caption fetch                                   |               — |  4.264s / 13.0% |
+| Indexing + retrieval + verification + selection |         ~0.006s |         ~0.007s |
+
+The important architectural finding is:
+
+> **ASR, not indexing/retrieval, is the dominant computational bottleneck when
+> captions are unavailable.**
+
+The indexed retrieval and verification stage took only a few milliseconds in this
+measurement.
+
+Once caption-assisted local ASR removes most of the full-video transcription cost,
+network download and frame extraction become relatively more significant.
+
+These measurements are from real runs and should be treated as representative evidence,
+not universal timing guarantees.
+
+---
+
+# Web UI
+
+The project also includes a browser-based interface.
+
+The Web UI is intentionally a thin layer over the same pipeline used by the CLI.
+
+There is no separate implementation of:
+
+* dialogue retrieval
+* matching
+* verification
+* ASR
+* onset detection
+* frame mapping
+
+### Install web dependencies
 
 ```bash
 pip install -r requirements-web.txt
-$env:PYTHONPATH = "src"   # PowerShell; use `export PYTHONPATH=src` on bash
+```
+
+Set `PYTHONPATH`:
+
+#### PowerShell
+
+```powershell
+$env:PYTHONPATH = "src"
+```
+
+#### bash / zsh
+
+```bash
+export PYTHONPATH=src
+```
+
+Start the server:
+
+```bash
 python -m uvicorn dialogue_frame_finder.api:app --reload
 ```
 
-Then open `http://127.0.0.1:8000` — paste a video URL, enter the dialogue, click **Find
-Frame**. Progress is shown as real pipeline stage names, never a fabricated percentage.
-"Use captions" and the ASR model selector are tucked behind an **Advanced** section — the
-default flow only needs a URL and a dialogue. See APPROACH.md §11 for the API/UI
-architecture and §10 for the caption-assisted path the toggle enables.
+Open:
 
-## Output contract
-
-```
-Timestamp : HH:MM:SS.sss
-Frame     : <frame number, where applicable>
-Text      : "<extracted/identified dialogue>"
-Image     : <path to the extracted frame image>
+```text
+http://127.0.0.1:8000
 ```
 
-Timestamp, Frame, and Image always refer to the same video instant by construction (the
-Timestamp reported is the *extracted frame's own* presentation timestamp, not an
-intermediate estimate). `Frame` is `N/A (not available for this source/timestamp)` in the
-rare case an exact frame number can't be determined — the required Timestamp and Image are
-still produced. `Status` and `Confidence` are supplementary diagnostic fields, not part of
-the required minimum output.
+Then:
 
-Frame images are saved under `<output_dir>/images/` (default `outputs/images/`), named
-after the extracted frame's timestamp, e.g. `outputs/images/frame_325.305.png`.
+1. Paste the video URL.
+2. Enter the dialogue.
+3. Click **Find Frame**.
+4. Watch the actual pipeline stages progress.
+5. View the extracted frame and result.
 
-### Status values
+The UI also exposes an **Advanced** section containing options such as caption
+assistance and ASR model selection.
 
-`HIGH_CONFIDENCE`, `MEDIUM_CONFIDENCE`, `LOW_CONFIDENCE`, `AMBIGUOUS_MATCH` (another
-occurrence scored nearly as well as the one selected), `NO_CONFIDENT_MATCH` (all four
-required fields are `None` — never a fabricated guess). See APPROACH.md §6.
+### Progress reporting
 
-## Optional: semantic fallback
+The backend reports actual pipeline stages rather than inventing a percentage.
 
-Consulted only when lexical/fuzzy matching alone found no confident or an ambiguous
-result (APPROACH.md §6). Off by default; enable by passing a matcher to `run_pipeline`:
+The browser polls the API for the current job state while the same `run_pipeline()`
+function executes in the background.
+
+This keeps the UI simple while ensuring that CLI and Web UI results come from exactly
+the same implementation.
+
+---
+
+# Semantic fallback
+
+The semantic fallback is optional and disabled by default.
+
+It can be enabled programmatically:
 
 ```python
 from dialogue_frame_finder.pipeline import run_pipeline
 from dialogue_frame_finder.semantic import ClaudeSemanticMatcher
 
-run_pipeline(url, target_text, "outputs", semantic_matcher=ClaudeSemanticMatcher())
+run_pipeline(
+    url,
+    target_text,
+    "outputs",
+    semantic_matcher=ClaudeSemanticMatcher()
+)
 ```
 
-Requires an `ANTHROPIC_API_KEY` environment variable (or pass `api_key=` explicitly). The
-exact prompt used is recorded in [prompts.txt](prompts.txt).
+An Anthropic API key is required:
 
-## Running the tests
+```text
+ANTHROPIC_API_KEY
+```
+
+The LLM does **not** generate timestamps or frames.
+
+It can only select among candidate regions that the deterministic pipeline has already
+identified.
+
+---
+
+# Testing
+
+Run the default test suite:
 
 ```bash
-pytest                 # default: unit + integration, offline, ~2s
-pytest -m unit          # pure logic only, no filesystem/media
-pytest -m integration   # real local audio/video fixtures, no network
-pytest -m e2e            # real network + real ASR against OK.ru and YouTube (slow, opt-in)
-pytest --cov=dialogue_frame_finder --cov-report=term-missing   # coverage report
+pytest
 ```
 
-The default run (`pytest`, no flags) never touches the network — `pyproject.toml` excludes
-`e2e` tests unless explicitly requested. Test fixtures are synthetic (`tests/video_fixtures.py`
-generates small local audio/video files with known, exact timestamps) — no video is
-committed to the repository.
+The default suite is offline and does not download videos or call external APIs.
 
-## Project structure
+Useful test commands:
 
-See APPROACH.md §13.
+```bash
+pytest -m unit
+```
 
-## Design and algorithm
+```bash
+pytest -m integration
+```
 
-See [APPROACH.md](APPROACH.md) for the full architecture, the indexed-retrieval algorithm,
-onset refinement, PTS-aware frame mapping, ambiguity handling, ASR model comparison, and
-threshold calibration rationale.
+For the opt-in real-world tests:
+
+```bash
+pytest -m e2e
+```
+
+Coverage:
+
+```bash
+pytest --cov=dialogue_frame_finder --cov-report=term-missing
+```
+
+The repository currently contains **235 passing tests**.
+
+The test suite covers:
+
+* transcript normalization
+* indexing
+* anchor selection
+* retrieval
+* fuzzy matching
+* bounded scanning
+* word alignment
+* verification
+* earliest-occurrence selection
+* confidence classification
+* onset refinement
+* PTS-aware frame mapping
+* caption-assisted orchestration
+* API behavior
+* provider independence
+* local audio/video fixtures
+
+No real videos are committed to the repository.
+
+---
+
+# Project structure
+
+```text
+Quest1/
+│
+├── src/
+│   └── dialogue_frame_finder/
+│       ├── api.py
+│       ├── cli.py
+│       ├── pipeline.py
+│       ├── config.py
+│       │
+│       ├── media_resolver.py
+│       ├── audio.py
+│       ├── asr.py
+│       ├── captions.py
+│       │
+│       ├── transcript.py
+│       ├── normalization.py
+│       ├── index.py
+│       ├── anchors.py
+│       ├── retrieval.py
+│       ├── fallback.py
+│       ├── neighborhood.py
+│       ├── align.py
+│       ├── search.py
+│       ├── verification.py
+│       ├── selection.py
+│       ├── semantic.py
+│       │
+│       ├── onset.py
+│       ├── frame_mapping.py
+│       ├── timeformat.py
+│       └── output.py
+│
+├── web/
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── e2e/
+│   └── video_fixtures.py
+│
+├── outputs/
+│   └── images/
+│
+├── README.md
+├── APPROACH.md
+├── prompts.txt
+├── requirements.txt
+├── requirements-web.txt
+└── pyproject.toml
+```
+
+---
+
+# Design summary
+
+The project deliberately separates the problem into independent stages:
+
+```text
+Media resolution
+      ↓
+Audio / caption localization
+      ↓
+ASR
+      ↓
+Transcript representation
+      ↓
+Indexed retrieval
+      ↓
+Candidate verification
+      ↓
+Earliest-valid selection
+      ↓
+Onset refinement
+      ↓
+PTS-aware frame mapping
+      ↓
+Output
+```
+
+This separation makes the system:
+
+* **Provider-independent** after media resolution
+* **Testable** through dependency injection
+* **Robust to ASR errors**
+* **Explicit about uncertainty**
+* **Efficient for long transcripts**
+* **Accurate at the frame-selection stage**
+* **Extensible without duplicating the core pipeline**
+
+The caption-assisted path is an optimization layered on top of the same architecture,
+rather than a separate implementation.
+
+For the detailed engineering rationale, experiments, trade-offs, and known limitations,
+see [`APPROACH.md`](APPROACH.md).
