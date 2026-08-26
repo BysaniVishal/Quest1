@@ -966,7 +966,7 @@ kept in full.
   style rather than retrospectively smoothing them over. This entry is
   the result of that instruction, applied to itself.
 
-2.14 Final documentation pass, a real optimization investigation, and submission checks
+2.14 Final documentation pass and submission checks
   "Before making any documentation changes, I want you to do a complete
   documentation-grounding pass over the CURRENT Quest1 repository. Do NOT
   rely on our previous conversation or assumptions... Read the actual
@@ -1002,35 +1002,135 @@ kept in full.
   video, including a real mid-run 403/connection-reset that the existing
   retry logic recovered from automatically; correct result confirmed.
 
-  "Before making ANY changes to production code, I want you to investigate
-  whether we can meaningfully reduce latency when captions are unavailable.
-  ... Do not assume an optimization is better just because it sounds
-  theoretically faster. I want measured evidence..." -- investigated five
-  approaches (parallel audio/video download, chunked/streaming ASR with
-  early stop, a tiny.en-then-base.en two-stage design, and a hybrid of
-  the two) against the current full-video-ASR baseline, using real
-  experiments, not estimates, wherever possible:
-  - Tested whether YouTube/OK.ru actually expose separate audio-only
-    download streams under this project's real extraction setup -- they
-    do not (confirmed via --list-formats on both real providers); the
-    parallel-download idea was rejected outright on that evidence, not
-    theory.
-  - Tested whether faster-whisper's transcription generator is lazy
-    (real compute savings from stopping early) or eager (already did the
-    work) by timing partial consumption at 15%/50%/85% of a real 10-minute
-    audio file -- confirmed genuinely lazy (21%/59%/100% of full time
-    respectively), meaning early-stop is a real, not theoretical,
-    optimization.
-  - Measured real tiny.en vs. base.en full-video and early-stop timing on
-    the same audio to evaluate the two-stage/hybrid designs -- found the
-    simpler option (early-stop directly on base.en, no second model) beat
-    the more complex hybrid even in the scenario the hybrid was supposed
-    to win at.
-  Recommendation: implement early-stop on base.en only, with one real
-  accuracy trade-off flagged explicitly (loses later-duplicate ambiguity
-  detection unless a bounded look-ahead is added) -- reject the other four
-  approaches with evidence, not assumption. Not implemented -- investigation
-  only, per the explicit instruction.
+2.15 Latency optimization investigation: captions, parallel downloads, early-stop ASR, and two-stage ASR
+  (Note: the summary below was drafted with ChatGPT's help, working from the
+  real investigation actually performed in this Claude Code session -- the
+  measurements, code paths, and conclusions it describes are the real ones
+  from that work, not independently re-derived.)
+
+  "Before doing anything I want to commit what we have as of now." --
+  "Also update approach, readme, prompts, all relevant files which are
+  relevant for Quest1 submission." -- "Now I want to ask Claude to try the
+  better approaches we discussed, compare with what we have, and then see
+  if we can switch or not."
+
+  Constraint established: do not modify production code before
+  experimentally comparing the proposed latency optimizations against the
+  current implementation. Accuracy and earliest-valid-occurrence
+  correctness remain more important than theoretical latency improvements.
+
+  Investigated:
+  1. Current baseline -- profile the current end-to-end pipeline; identify
+     where latency actually occurs (ASR, indexing/retrieval, download, or
+     frame extraction); do not optimize indexing/retrieval unless
+     measurements show it matters.
+  2. Audio-first / parallel audio-video download -- investigate whether
+     audio-only and video-only downloads are actually available from the
+     currently supported providers, and whether audio download and video
+     download could run concurrently with ASR; compare actual formats/
+     sizes/latency rather than assuming separate streams exist.
+  3. Chunked/streaming ASR with early stopping -- investigate whether
+     faster-whisper's transcription generator actually performs
+     incremental work, and whether consuming only part of it really
+     reduces computation; preserve the earliest-valid-occurrence
+     requirement; stop only after a candidate satisfies the same existing
+     search/verification requirements.
+  4. Two-stage ASR -- tiny.en as a fast coarse locator followed by base.en
+     local confirmation; measure whether the extra model pass actually
+     gives an end-to-end benefit.
+  5. Combined tiny.en + early stopping -- whether a faster coarse model
+     plus early stopping beats simply using base.en with early stopping.
+  6. Compare all approaches on latency, accuracy risk, complexity,
+     long-video behavior, and architectural impact.
+
+  Real findings:
+
+  Current baseline (real ~7-minute video, no captions): total 86.17s --
+  ASR 60.975s (70.8%), download 16.815s (19.5%), frame extraction 7.190s
+  (8.3%), indexing+retrieval+verification+selection ~0.006s (0.007%).
+  Indexing/retrieval confirmed not a meaningful bottleneck.
+
+  Audio/video parallel download: tested actual format availability rather
+  than assuming separate streams exist. Under the current YouTube
+  extraction/client setup, only a muxed format was exposed; OK.ru also
+  exposed muxed quality tiers only, no separate audio-only/video-only
+  streams. Nothing to parallelize at the download level -- rejected based
+  on real provider behavior, not theory.
+
+  Early-stop base.en ASR -- the strongest result. Real experiment,
+  ~600s of Darcy audio, base.en: full transcription 55.98s; stop at ~15%
+  of audio = 11.77s; stop at ~50% = 32.88s; stop at ~85% = 56.19s.
+  Confirms faster-whisper's generator does real incremental work --
+  consuming only the required portion produces real compute savings.
+  Early targets benefit most; mid-video targets still benefit; targets
+  near the end naturally see little or no benefit.
+
+  Correctness analysis for early-stop: segments arrive chronologically, so
+  if the transcript is processed strictly from the start and
+  search_dialogue finds a valid candidate, no earlier unprocessed audio
+  exists -- the existing search_dialogue function can be reused
+  incrementally without changing its scoring logic. A phrase split across
+  a segment boundary naturally stays below the existing validity threshold
+  until enough transcript text has arrived, so the earliest-valid-
+  occurrence requirement is preserved by construction.
+
+  Important accuracy trade-off, not hidden: early stopping means later
+  occurrences of the same phrase are not necessarily observed, so the
+  system may lose the information needed to classify a result as
+  AMBIGUOUS_MATCH when a later occurrence has a close score. This doesn't
+  make the earliest selected occurrence wrong, but it can reduce
+  later-duplicate ambiguity detection. Before implementation, the amount
+  of bounded look-ahead needed to preserve current ambiguity behavior
+  should be tested against real repeated-dialogue examples, not assumed.
+  A possible mitigation: consume a small amount of additional audio after
+  the first valid candidate before finalizing.
+
+  Two-stage tiny.en -> base.en: real tiny.en full-video transcription on
+  the same audio took 30.09s vs. 55.98s for base.en. A full tiny.en pass
+  plus ~8s of local base.en confirmation was estimated at ~38s -- a modest
+  improvement that doesn't benefit from target position (tiny.en still
+  processes the whole video), and adds real model/confirmation complexity
+  plus coarse-model false-positive risk. Not compelling on its own.
+
+  tiny.en + early-stop + local base.en: real tiny.en early-stop at ~15%
+  took 8.17s; adding ~8s local base.en confirmation gives an estimated
+  ~16s. base.en early-stop alone took 11.77s at the same target position
+  -- the more complicated two-model hybrid was actually slower for the
+  important early-target case. It may be somewhat more competitive for
+  mid-video targets, but the added complexity and coarse-model accuracy
+  risk aren't justified by the measured benefit. Recommendation: do not
+  build this unless later evidence changes the trade-off.
+
+  Overall recommendation: reject audio/video parallel download (providers
+  expose muxed media only); reject tiny.en full-video coarse localization
+  (insufficiently beneficial); reject tiny.en + early-stop + local base.en
+  (base.en early-stop alone is simpler and faster for the important
+  early-target case); investigate and potentially implement early-stop
+  directly on base.en as the next latency optimization; keep the existing
+  caption-assisted path, full-video ASR fallback, verification, alignment,
+  confidence thresholds, onset refinement, PTS-aware frame mapping, and
+  frame extraction logic all unchanged.
+
+  Proposed architecture, captured for reference (not implemented):
+  videos with captions keep the existing captions -> coarse localization
+  -> local base.en -> existing verification -> onset/PTS pipeline; videos
+  without captions would use base.en incremental ASR, searching the
+  transcript as segments arrive, with a bounded look-ahead/ambiguity check
+  once a valid candidate is found, falling through to the equivalent of
+  today's full-video ASR path if nothing is found before the end.
+  Implementation would remain opt-in initially, keeping current Version 3
+  behavior as the safe default.
+
+  Current decision: do NOT implement early-stop yet, until the ambiguity/
+  look-ahead behavior is tested on real repeated-dialogue cases and the
+  exact correctness trade-off is understood. This is documented as an
+  evaluated-but-deferred optimization path -- the measured results above
+  are real; the two-stage/hybrid latency figures are clearly labeled
+  estimates built from real component measurements, not independently
+  re-measured end-to-end; none of the five approaches are implemented
+  features.
+
+2.16 Removing semantic fallback from README
 
   "can u remove the semantic fallback part from readme file, also testing
   part im not comfortable, should i remove these both from readme file" --
@@ -1043,3 +1143,26 @@ kept in full.
   handling section, and its own dedicated section); this entry, written
   deliberately concise rather than exhaustive, is the result of the
   second half of that request.
+
+2.17 Real-world checks, README heading, and this file's own restructuring
+  Shared the actual Quest1 problem statement PDF and asked "are we
+  satisfying what all they r expecting" -- checked it against the real
+  implementation line by line; confirmed all concrete requirements are
+  met, and flagged one genuine interpretive point worth being ready to
+  defend (the PDF says "on-screen dialogue," the system searches spoken
+  audio -- justified directly from the real supplied video, which has no
+  on-screen text at all). Also confirmed the GitHub repo is genuinely
+  public via a live, unauthenticated API check, not assumed.
+
+  "in readme heading can u keep the problem statement heading" -- the
+  README's main heading was changed to the problem statement's own title,
+  with the project's working name kept as a subtitle underneath.
+
+  This entry, and 2.15 above, are the result of: "this was todays
+  research, so i used chatgpt as well, can u properly structure the
+  prompts.txt doc accoridng to this" -- the ChatGPT-drafted investigation
+  summary was checked against what was actually measured this session
+  (all real numbers matched) before being restructured into 2.15, split
+  out from the prior combined entry so the latency investigation has its
+  own clearly-dated section rather than being buried inside a general
+  "documentation and submission checks" entry.
