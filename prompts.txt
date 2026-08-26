@@ -965,3 +965,81 @@ kept in full.
   this file's earlier sections in their original, unpolished chronological
   style rather than retrospectively smoothing them over. This entry is
   the result of that instruction, applied to itself.
+
+2.14 Final documentation pass, a real optimization investigation, and submission checks
+  "Before making any documentation changes, I want you to do a complete
+  documentation-grounding pass over the CURRENT Quest1 repository. Do NOT
+  rely on our previous conversation or assumptions... Read the actual
+  current files/code and base the documentation ONLY on what is currently
+  implemented." -- every core module re-read fresh (not from memory);
+  audit concluded the existing docs were already accurate, no changes
+  needed at that point.
+
+  User then supplied a full rewritten APPROACH.md (diagram showing the
+  real caption-assisted branching directly in the main architecture
+  diagram, not just linked from a sub-section) and, separately, a full
+  rewritten README.md (recruiter-friendly framing, implementation detail
+  moved to APPROACH.md). Both were verified against the real source code
+  before being applied -- one factual contradiction and one incomplete
+  file listing were found and fixed in the README draft before writing it.
+
+  "in the readme also i want like this url will come, we need to go there
+  and then we can check the outputs based on the frontend we made, also
+  this is sample output on the site" -- a real Web UI screenshot was added
+  to docs/screenshots/ and referenced in the README.
+
+  A real WhatsApp-shared "how to run" checklist surfaced two genuine gaps
+  vs. the current README: no plain Windows CMD instructions (only
+  PowerShell/bash), and no explicit "cd into the project folder" step --
+  both fixed, plus a short copy-paste Quick Start section added.
+
+  "I think what we have now is good enough for submission without changes,
+  just check through all files if everything is okay and good" -- a real
+  audit: git status/log, full test suite, tracked-file list, cross-
+  reference check, secret scan, module import sanity check, live FastAPI
+  root-route check. Followed by "double check the ok.ru example still
+  works end to end" -- a real, unmocked run against the actual reference
+  video, including a real mid-run 403/connection-reset that the existing
+  retry logic recovered from automatically; correct result confirmed.
+
+  "Before making ANY changes to production code, I want you to investigate
+  whether we can meaningfully reduce latency when captions are unavailable.
+  ... Do not assume an optimization is better just because it sounds
+  theoretically faster. I want measured evidence..." -- investigated five
+  approaches (parallel audio/video download, chunked/streaming ASR with
+  early stop, a tiny.en-then-base.en two-stage design, and a hybrid of
+  the two) against the current full-video-ASR baseline, using real
+  experiments, not estimates, wherever possible:
+  - Tested whether YouTube/OK.ru actually expose separate audio-only
+    download streams under this project's real extraction setup -- they
+    do not (confirmed via --list-formats on both real providers); the
+    parallel-download idea was rejected outright on that evidence, not
+    theory.
+  - Tested whether faster-whisper's transcription generator is lazy
+    (real compute savings from stopping early) or eager (already did the
+    work) by timing partial consumption at 15%/50%/85% of a real 10-minute
+    audio file -- confirmed genuinely lazy (21%/59%/100% of full time
+    respectively), meaning early-stop is a real, not theoretical,
+    optimization.
+  - Measured real tiny.en vs. base.en full-video and early-stop timing on
+    the same audio to evaluate the two-stage/hybrid designs -- found the
+    simpler option (early-stop directly on base.en, no second model) beat
+    the more complex hybrid even in the scenario the hybrid was supposed
+    to win at.
+  Recommendation: implement early-stop on base.en only, with one real
+  accuracy trade-off flagged explicitly (loses later-duplicate ambiguity
+  detection unless a bounded look-ahead is added) -- reject the other four
+  approaches with evidence, not assumption. Not implemented -- investigation
+  only, per the explicit instruction.
+
+  "can u remove the semantic fallback part from readme file, also testing
+  part im not comfortable, should i remove these both from readme file" --
+  gave an honest recommendation (keep testing -- it's a real, verified
+  strength, not a risk; keep at least a short semantic-fallback mention
+  since prompts.txt already documents its exact prompt). "remove semantic
+  fallback i cant explain it, also update prompts.txt with relevant new
+  prompts we did, dont keep tooo unecessary prompts" -- semantic fallback
+  removed from README (three places: the dependency list, the ambiguity-
+  handling section, and its own dedicated section); this entry, written
+  deliberately concise rather than exhaustive, is the result of the
+  second half of that request.

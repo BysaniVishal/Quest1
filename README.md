@@ -117,7 +117,6 @@ The core dependencies include:
 * `av` / PyAV — audio/video decoding
 * `Pillow` — frame image saving
 * `rapidfuzz` — fuzzy matching
-* `anthropic` — optional semantic fallback
 
 No `ffmpeg` binary on `PATH` is required. Audio/video decoding is handled through PyAV.
 
@@ -450,15 +449,6 @@ NO_CONFIDENT_MATCH
 
 A `NO_CONFIDENT_MATCH` result does not fabricate a timestamp or frame.
 
-The semantic fallback, when enabled, is also constrained:
-
-* It is used only when lexical matching fails or is ambiguous.
-* It chooses among candidates already located by the system.
-* It cannot invent a timestamp.
-* The final onset is still calculated using the normal verification/onset pipeline.
-
-The exact semantic fallback prompt is recorded in [`prompts.txt`](prompts.txt).
-
 ---
 
 # ASR model
@@ -599,37 +589,6 @@ function executes in the background.
 
 This keeps the UI simple while ensuring that CLI and Web UI results come from exactly
 the same implementation.
-
----
-
-# Semantic fallback
-
-The semantic fallback is optional and disabled by default.
-
-It can be enabled programmatically:
-
-```python
-from dialogue_frame_finder.pipeline import run_pipeline
-from dialogue_frame_finder.semantic import ClaudeSemanticMatcher
-
-run_pipeline(
-    url,
-    target_text,
-    "outputs",
-    semantic_matcher=ClaudeSemanticMatcher()
-)
-```
-
-An Anthropic API key is required:
-
-```text
-ANTHROPIC_API_KEY
-```
-
-The LLM does **not** generate timestamps or frames.
-
-It can only select among candidate regions that the deterministic pipeline has already
-identified.
 
 ---
 
