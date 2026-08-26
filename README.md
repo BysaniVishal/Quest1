@@ -1,4 +1,6 @@
-# Dialogue-to-Exact-Video-Frame Finder
+# Find the Exact Frame Where a Dialogue Appears in a Media URL
+
+
 
 Given a publicly accessible video URL and a target spoken dialogue, this system finds
 the **earliest occurrence of that dialogue**, determines where it begins, and returns:
