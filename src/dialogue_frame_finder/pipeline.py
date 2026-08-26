@@ -18,6 +18,7 @@ from typing import Callable, Optional, Union
 
 from .asr import ASRAdapter, FasterWhisperASR
 from .audio import extract_audio_clip as _extract_audio_clip
+from .captions import CaptionSource, try_caption_assisted_transcript
 from .config import DEFAULT_CONFIG, SearchConfig
 from .frame_mapping import FrameResult, locate_frame as _locate_frame, save_frame_image as _save_frame_image
 from .media_resolver import MediaResolver, ResolvedMedia
@@ -50,6 +51,7 @@ class PipelineResult:
     resolved_media: ResolvedMedia
     transcript: Transcript
     search_result: SearchResult
+    transcript_source: str = "full_video_asr"
 
 
 def run_pipeline(
@@ -62,8 +64,19 @@ def run_pipeline(
     locate_frame_fn: Callable[..., FrameResult] = _default_locate_frame,
     save_frame_image_fn: Callable[..., None] = _save_frame_image,
     semantic_matcher: Optional[SemanticMatcher] = None,
+    caption_source: Optional[CaptionSource] = None,
     config: SearchConfig = DEFAULT_CONFIG,
+    on_stage: Optional[Callable[[str], None]] = None,
 ) -> PipelineResult:
+    """`on_stage` (optional): called with a short human-readable label at
+    each real stage boundary below -- purely additive, no-op by default, so
+    every existing caller (CLI, tests) is unaffected. Added for the web UI's
+    progress display; carries no timing/percentage claim, only real stage
+    names, since the pipeline has no way to estimate completion percentage."""
+    def _stage(message: str) -> None:
+        if on_stage is not None:
+            on_stage(message)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,10 +85,35 @@ def run_pipeline(
     if asr_adapter is None:
         asr_adapter = FasterWhisperASR()
 
+    _stage("Downloading video...")
     resolved = media_resolver.resolve(url)
+    _stage("Extracting audio...")
     audio_clip = extract_audio_clip_fn(resolved.local_path)
-    transcript = asr_adapter.transcribe(resolved.local_path)
 
+    # Caption-assisted local ASR (latency optimization, off by default --
+    # pass a real CaptionSource() to opt in): captions only ever narrow
+    # WHICH audio gets transcribed, never how it's matched or timed --
+    # see captions.py's module docstring for the full rationale and the
+    # real investigation behind it. Any failure at any stage (no captions,
+    # no coarse match, local ASR not independently confirming a match)
+    # falls through to the exact same full-video ASR path used when this
+    # feature is disabled entirely.
+    transcript = None
+    transcript_source = "full_video_asr"
+    if caption_source is not None:
+        _stage("Checking captions...")
+        assist = try_caption_assisted_transcript(
+            url, target_text, audio_clip, caption_source, asr_adapter, config, on_stage=_stage
+        )
+        if assist.used:
+            transcript = assist.transcript
+            transcript_source = "captions_local_asr"
+
+    if transcript is None:
+        _stage("Transcribing audio (full video)...")
+        transcript = asr_adapter.transcribe(resolved.local_path)
+
+    _stage("Verifying dialogue...")
     search_result = search_dialogue(target_text, transcript, config)
     if semantic_matcher is not None:
         search_result = apply_semantic_fallback(search_result, target_text, transcript, semantic_matcher, config)
@@ -84,6 +122,7 @@ def run_pipeline(
     frame_result = None
     image_path = None
     if onset_result is not None:
+        _stage("Locating exact frame...")
         frame_result = locate_frame_fn(resolved.local_path, onset_result.refined_onset)
         # Runtime output images live under <output_dir>/images/ (not mixed
         # in with downloaded media or Claude's scratchpad), e.g.
@@ -100,10 +139,12 @@ def run_pipeline(
     output = build_output_record(
         search_result, transcript, onset_result, frame_result, image_path, config
     )
+    output.diagnostics["transcript_source"] = transcript_source
 
     return PipelineResult(
         output=output,
         resolved_media=resolved,
         transcript=transcript,
         search_result=search_result,
+        transcript_source=transcript_source,
     )

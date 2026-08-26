@@ -72,5 +72,34 @@ class SearchConfig:
     semantic_min_confidence: float = 0.6
     semantic_max_candidates: int = 8
 
+    # Caption-assisted local ASR (latency optimization): captions are used
+    # ONLY for coarse candidate localization via the same search_dialogue
+    # used everywhere else -- never for final word timing (real, measured
+    # investigation found YouTube auto-caption word offsets are absent for
+    # real videos in this project; block-level timestamps can be several
+    # seconds away from the true onset). Once a coarse candidate block is
+    # found, real ASR still runs -- just on a small local audio window
+    # instead of the whole video. Padding is asymmetric-by-default and
+    # span-based (added to the candidate's own matched-block start/end, not
+    # a fixed radius around a point) because real testing showed the true
+    # onset falls within the caption block's own span, offset from its
+    # start by several seconds -- a fixed small radius around the start
+    # alone would have missed it.
+    caption_window_pre_pad: float = 2.0
+    caption_window_post_pad: float = 3.0
+    # Defensive cap: an unusually long single caption block (or several
+    # merged ones) should not silently recreate the full-video-ASR cost
+    # this optimization exists to avoid.
+    caption_window_max_seconds: float = 60.0
+    # Real testing found the coarse caption pass is subject to the SAME
+    # earliest-valid-wins-vs-false-positive pattern as full ASR (a short,
+    # coincidentally-repeated word like a proper noun can produce several
+    # valid-but-wrong coarse candidates before the true one). Rather than
+    # giving up after the first coarse candidate's local ASR fails to
+    # confirm, try the next-earliest valid coarse candidates in order
+    # (already time-sorted via SearchResult.other_valid), up to this cap,
+    # before falling back to full-video ASR -- bounds worst-case latency.
+    caption_max_coarse_candidates: int = 3
+
 
 DEFAULT_CONFIG = SearchConfig()

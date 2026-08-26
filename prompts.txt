@@ -728,3 +728,240 @@ kept in full.
   be good in approach so they can easily understand my thinking" -- this
   entry, and the architecture/decision diagrams added to APPROACH.md, are
   the result.
+
+2.12 Caption-assisted local ASR: investigation, real validation, and implementation
+  "also should i make any frontend for this??" -- recommended against it
+  (out of scope for what Quest1 evaluates); redirected effort toward the
+  algorithm/calibration work already in progress.
+
+  "I have another idea for reducing latency: Instead of always running ASR
+  on the entire video, first check whether usable captions/subtitles are
+  available for the video... [10 detailed investigation questions: yt-dlp
+  caption reliability, manual vs auto-generated, word- vs segment-level
+  timestamps, accuracy for exact-frame localization, normalization into
+  the existing Transcript model, detecting poor captions, fallback
+  triggers, latency estimate]... propose the smallest architectural change
+  that would allow CAPTIONS -> existing search pipeline, ASR -> existing
+  search pipeline, without duplicating the indexing, anchor retrieval,
+  fuzzy verification, onset refinement, or frame-selection logic. Do not
+  modify code yet." Answered from yt-dlp/format knowledge plus the
+  existing codebase's own DI seams (`Transcript`, `ASRAdapter`); flagged
+  OK.ru caption reliability as the one unverified risk.
+
+  "For our actual OK.ru example, there are no captions... captions should
+  only be used for coarse candidate localization and ASR should still be
+  used for final word-level timing/frame localization." -- scope narrowed
+  by the user themselves before any implementation.
+
+  "I want to clarify one concern before we implement anything. I'm not
+  fully convinced that YouTube subtitle/caption word-level timestamps are
+  equivalent to the word-level timestamps produced by our current base.en
+  ASR... Please investigate specifically: [8 questions on json3 timestamp
+  semantics, whether they're genuine speech alignment vs. display timing,
+  accuracy, and whether onset refinement could safely operate on them]...
+  distinguish between what we know from the caption format and what we
+  would need to empirically validate." -- answered with real, empirical
+  data (not just format documentation): fetched real `json3` auto-caption
+  tracks for both project videos via yt-dlp and found 0/185 words had a
+  genuine per-word `tOffsetMs` -- a real, measured 9.3s and 2.1s gap
+  between caption block start and true onset, confirming the user's
+  skepticism was correct and ruling out trusting caption timestamps
+  directly for onset/frame selection.
+
+  "before we do anything further can u check if actually youtube is giving
+  correctly and also i dont want to compromise too much accuracy and want
+  to reduce latency as well" -- authorized real network/ASR execution
+  (previously blocked by an active plan-mode session) to run the checks
+  above for real.
+
+  "I want to investigate the hybrid captions + local ASR approach before
+  we implement anything... Measure: [10 questions: coarse-localization
+  accuracy, gap to true onset, safe local-ASR window size, latency
+  savings, whether local ASR beats full-video ASR, failure modes for
+  unavailable/incorrect/multiple/early-late/missing captions, how to
+  decide captions succeeded, fallback guarantees, latency estimate for the
+  54-minute OK.ru case]... compare A) current full-video base.en, B)
+  proposed captions->coarse->local base.en, C) captions-unavailable
+  fallback... Do NOT recommend the hybrid approach just because it is
+  faster." -- answered with real measurements: real coarse-localization
+  test against both videos' actual captions (succeeded, using the
+  unmodified search_dialogue); a real base.en run on a real, precisely
+  downloaded local audio window (yt-dlp `--download-sections`) that
+  recovered "Go Darcy" correctly where full-video base.en had earlier
+  failed on the same video; real elapsed-time comparison (7.74s local vs
+  55.55s full-video on the same 5-minute clip). Recommendation given:
+  implement, with the two-tier fallback treated as non-negotiable.
+
+  "yess lets go ahead then if this is the best, considering all factos" --
+  implementation began: new `captions.py` module (`CaptionSource`,
+  `compute_local_window`, `transcribe_local_window`,
+  `try_caption_assisted_transcript`), new `SearchConfig` fields, a new
+  `--use-captions` CLI flag, and `run_pipeline` orchestration -- built to
+  reuse `search_dialogue`/`ASRAdapter.transcribe` completely unmodified
+  (verified directly: the identical `search_dialogue` call and the
+  identical `ASRAdapter.transcribe(path)` interface handle both the coarse
+  and local-ASR passes, via a small temp-file bridge rather than any new
+  ASR entry point). 18 new tests written and passing; full suite (226
+  tests) verified with zero regressions.
+
+  Real E2E validation against the actual Darcy video (not simulated)
+  surfaced two real, unanticipated issues, both investigated and either
+  fixed or honestly documented rather than assumed away:
+  - `CaptionSource` was missing `MediaResolver`'s YouTube bot-check
+    yt-dlp options, causing its own caption fetch to fail silently on the
+    same friction `MediaResolver` already solves -- fixed by importing and
+    reusing `media_resolver._provider_ydl_opts`/`detect_provider` rather
+    than duplicating that knowledge.
+  - The coarse caption pass turned out to be subject to the exact same
+    earliest-valid-wins-vs-false-positive pattern as full ASR (a real
+    "Let's darcy go"-style spurious block scored above threshold before
+    the true one). Fixed by trying coarse candidates earliest-first (via
+    `SearchResult.other_valid`, already time-sorted) up to a configurable
+    cap, rather than giving up after the first non-confirming candidate --
+    with a new regression test reproducing this exact scenario.
+
+  Final real E2E result: a genuine ~5-7x measured speedup (43-51s vs.
+  239-341s on the same real video), with the caption-assisted path
+  reproducing the *same* answer full-video `base.en` already gives on this
+  project's known hard case -- confirmed, via a second real re-test with
+  `--format worst` removed, that this was a pre-existing `base.en`
+  limitation independent of audio format, not a regression introduced by
+  this feature. Reported in full, including the limitation, before asking
+  whether to proceed.
+
+  "go ahead with what u think is best for me and my project, dont think
+  about darcy case alone, but see in general pipeline, if this arch is ok
+  or something" -- recommended shipping as an opt-in (default-off) latency
+  optimization: architecturally sound, isolated from the default pipeline
+  entirely when unused, and never worse than production's existing
+  accuracy on the hardest known real case. APPROACH.md/README.md updated
+  accordingly.
+
+2.13 Latency profiling, architecture review, and the web frontend
+  "I want to profile the latency in BOTH types of cases separately. Case A
+  -- captions NOT available... Case B -- captions AVAILABLE... For BOTH
+  cases, give me actual measured timings for every stage... 1. When
+  captions are NOT available, where is most of the latency? 2. When
+  captions ARE available, where is most of the latency? 3. How much time
+  does indexing/query finding actually take compared with ASR? ... 7. For
+  long videos, which stage scales with video length? Please use real
+  end-to-end runs and actual measurements, not estimates." -- answered by
+  writing a real profiling harness (monkeypatched timers around the actual
+  production functions, no code changes) and running it against the same
+  real video twice, with and without captions. Real numbers: 86.17s total
+  with no captions (ASR 70.8%, download 19.5%, indexing+retrieval+
+  verification+selection 0.007%); 32.88s with captions (download 50.6%,
+  frame extraction 22.3%, caption-assist 23.4%, ASR only 10.4%).
+
+  "Based on everything we've learned and measured so far about Quest1, I
+  want to do one final general engineering/optimization review before
+  making any more changes. ... Consider ALL dimensions, not just latency:
+  Accuracy/recall, False positives, Exact-frame accuracy, Latency, Memory,
+  Disk, Reliability, Code simplicity, Maintainability, Testability,
+  Scalability, Failure handling, Quality of the engineering/AI approach
+  for an interview/demo. ... For every suggested improvement, give: what
+  problem it solves, why it matters, expected benefit, accuracy risk,
+  latency impact, complexity, whether to implement now/later/not at all.
+  ... I want to avoid over-engineering Quest1." -- answered with a ranked
+  review across all dimensions using only the real profiling numbers
+  already established; recommended two small, low-risk CLI flags
+  (--asr-model, a fast-frame-lookup mode) as worth doing, explicitly
+  recommended AGAINST several attractive-looking ideas (switching default
+  model/captions-on-by-default, forced alignment, parallelizing the
+  candidate loop, any further threshold changes) as not evidence-justified
+  right now. Neither of the two recommended flags was actually implemented
+  yet -- this was a review, not a build.
+
+  "I want to add a polished frontend/UI to Quest1 so that the project can
+  be used without the CLI. IMPORTANT: Do NOT rewrite or change the
+  existing core dialogue-to-frame-finder logic... Please first inspect the
+  existing project architecture and determine the cleanest way to expose
+  the existing pipeline to a frontend. Stay in plan mode first..." --
+  followed by a full, detailed UI/UX spec (URL input, dialogue input, Find
+  Frame button, real progress stages not fake percentages, results
+  section with the frame image as centerpiece, error/no-match states,
+  configuration options, design principles). Investigated the real repo
+  (no existing web framework), proposed an architecture (FastAPI +
+  vanilla JS, no build step, api.py inside the existing package, a single
+  additive on_stage hook as the only pipeline.py change) and asked two
+  clarifying questions before building anything:
+  - "What frontend technology should I use?" -> vanilla HTML/CSS/JS chosen
+    over React.
+  - "Where should the new API/web code live?" -> inside the existing
+    package as api.py, chosen over a separate top-level package.
+
+  "yes" -- implementation: pipeline.py/captions.py gained the on_stage
+  hook (purely additive, verified 226 existing tests still passed
+  unmodified before writing anything new); new api.py, new web/ frontend,
+  new requirements-web.txt, new test_api.py (9 tests). Verified for real,
+  not just with mocks: started the actual server, hit it over real HTTP,
+  ran one real end-to-end job against the real Apollo 11 video through
+  the live API, downloaded the served image and visually confirmed it was
+  the correct frame.
+
+  Real bugs found after handing it over, each diagnosed from evidence
+  rather than guessed:
+  - "why its showing starting without doing anything, also whats this
+    advanced thing and all is everything ok" -- asked for terminal logs
+    and browser dev-tools output rather than guessing.
+  - Terminal log showed page loads but no POST /api/search at all.
+    Screenshots of dev tools then showed the actual cause: the URL/
+    dialogue fields were empty (only placeholder text), so the request
+    was never sent -- not a bug, user error, explained clearly.
+  - "see before i press find frame only it was in that circle of
+    starting and after getting output also, its still that circle with
+    locating exact frame, I want u to handle these minor frontend
+    issues" -- a real bug this time: found and fixed a CSS specificity
+    issue where #progress's explicit `display: flex` rule was overriding
+    the browser's default `[hidden] { display: none }` behavior, so
+    `progressSection.hidden = true` was setting the attribute correctly
+    but the browser never actually hid the element. Fixed with a single
+    `[hidden] { display: none !important; }` rule. The underlying search
+    itself had actually been working correctly the whole time (real
+    HIGH_CONFIDENCE result, correct frame) -- purely a visual bug, not a
+    data/backend problem.
+
+  "see i did the test, it takes 5 mins, can we optimize this by any
+  means, also we got My mind rebels its stagnation instead of at, in
+  interview, i dont think they would wait extensively for 5 minutes, and
+  may ask me why this couldnt be optimized more, so pls guide me based on
+  that, what to do / not to do" -- explained both observations were
+  expected, not bugs (the "its"/"at" error is the same already-documented
+  real ASR limitation; the 5 minutes matches the real measured ~11s/min
+  ASR rate on a 54-minute no-captions video); gave concrete interview-demo
+  guidance: don't demo the slow video live, pre-run it and show the
+  result, pick a short captioned video for a live fast-path demo, lead
+  with the real profiling numbers proactively, and explicitly don't
+  rush any unvalidated "fix" under time pressure.
+
+  "Before making any changes, I want your opinion on the current Quest1
+  architecture and possible latency optimizations. ... I want you to
+  investigate and compare these possible approaches: 1. Current approach
+  ... 2. Audio-first approach ... 3. Chunked/streaming ASR ... 4. Two-stage
+  ASR ... 5. Any other approach... Most importantly, please first inspect
+  the actual current code and confirm whether my understanding of the
+  current flow is correct. Do NOT implement anything yet." -- confirmed
+  the current flow (one muxed download serves both ASR and frame
+  extraction, no redundant fetch today); compared all four named
+  approaches plus a fifth (parallel audio+video download) on latency,
+  accuracy risk, effect on repeated occurrences, long-video scaling,
+  complexity, and whether each preserves the existing search/verification/
+  onset/frame logic, using only the real numbers from the profiling work
+  above; recommended two specific follow-up experiments (not
+  implementation) rather than picking a winner blind.
+
+  "Before committing the current Quest1 Version 3 checkpoint, I also want
+  the submission documentation brought fully up to date. ... First give me:
+  1. List of files you recommend updating 2. What is outdated/missing in
+  each 3. What you propose to change 4. Any documentation that should NOT
+  be changed. Then wait for my approval before editing the files." --
+  produced a documentation audit (README.md/APPROACH.md/prompts.txt)
+  against the actual current code and real test count (235), found and
+  reported concrete gaps (a stale section cross-reference, an entirely
+  undocumented web UI/API, unreconciled/potentially-overstated latency
+  numbers, a missing test count, this file's chronological log ending
+  several real investigations ago) before making any edits. "Go ahead
+  with the documentation updates" -- plus an explicit instruction to keep
+  this file's earlier sections in their original, unpolished chronological
+  style rather than retrospectively smoothing them over. This entry is
+  the result of that instruction, applied to itself.

@@ -3,6 +3,7 @@
 import argparse
 import sys
 
+from .captions import CaptionSource
 from .media_resolver import MediaResolver
 from .pipeline import run_pipeline
 
@@ -29,6 +30,16 @@ def main(argv=None) -> int:
         help="Max media-resolution attempts before giving up (default: 6). Raise this "
              "for a source with known intermittent connection resets, like OK.ru.",
     )
+    parser.add_argument(
+        "--use-captions", action="store_true",
+        help="Optional latency optimization: if the source has usable caption/subtitle "
+             "tracks, use them to coarsely localize the target dialogue, then run ASR on "
+             "just a short local audio window instead of the whole video. Captions are "
+             "NEVER used for the final timestamp/frame -- real ASR still produces the "
+             "word-level timing; captions only narrow which audio gets transcribed. Off "
+             "by default; falls back to the full-video ASR path automatically whenever "
+             "captions are unavailable or don't yield a confident local match.",
+    )
     args = parser.parse_args(argv)
 
     media_resolver = None
@@ -40,7 +51,12 @@ def main(argv=None) -> int:
             kwargs["max_attempts"] = args.retries
         media_resolver = MediaResolver(args.output_dir, **kwargs)
 
-    result = run_pipeline(args.url, args.dialogue, args.output_dir, media_resolver=media_resolver)
+    caption_source = CaptionSource() if args.use_captions else None
+
+    result = run_pipeline(
+        args.url, args.dialogue, args.output_dir,
+        media_resolver=media_resolver, caption_source=caption_source,
+    )
     record = result.output
 
     frame_display = record.frame if record.frame is not None else "N/A (not available for this source/timestamp)"
@@ -50,6 +66,8 @@ def main(argv=None) -> int:
     print(f"Frame     : {frame_display}")
     print(f'Text      : "{record.text}"')
     print(f"Image     : {record.image_path}")
+    if args.use_captions:
+        print(f"ASR source: {result.transcript_source}")
     if record.confidence_score is not None:
         print(f"Confidence: {record.confidence_score:.3f}")
 

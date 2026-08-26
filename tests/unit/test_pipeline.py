@@ -67,6 +67,21 @@ def _transcript_with_target():
     return Transcript.from_word_tuples([(w, i * 0.4, i * 0.4 + 0.35) for i, w in enumerate(words)])
 
 
+class _FakeCaptionSource:
+    def __init__(self, coarse_transcript):
+        self._coarse_transcript = coarse_transcript
+        self.calls = []
+
+    def fetch_coarse_transcript(self, url):
+        self.calls.append(url)
+        return self._coarse_transcript
+
+
+class _FakeCaptionSourceNoCaptions:
+    def fetch_coarse_transcript(self, url):
+        return None
+
+
 def test_run_pipeline_success_case_wires_everything(tmp_path):
     media_resolver = _FakeMediaResolver(local_path="movie.mp4", provider="okru")
     asr = _FakeASR(_transcript_with_target())
@@ -96,6 +111,78 @@ def test_run_pipeline_success_case_wires_everything(tmp_path):
     assert len(locate_calls) == 1
     assert locate_calls[0][0] == "movie.mp4"
     assert save_calls == [result.output.image_path]
+    assert result.transcript_source == "full_video_asr"
+
+
+def test_run_pipeline_uses_caption_assisted_transcript_when_available(tmp_path):
+    media_resolver = _FakeMediaResolver(local_path="movie.mp4", provider="youtube")
+    asr = _FakeASR(_transcript_with_target())
+    caption_source = _FakeCaptionSource(_transcript_with_target())
+    locate_calls, save_calls = [], []
+
+    result = run_pipeline(
+        "https://www.youtube.com/watch?v=x",
+        "My mind rebels at stagnation",
+        output_dir=tmp_path,
+        media_resolver=media_resolver,
+        asr_adapter=asr,
+        extract_audio_clip_fn=_fake_audio_clip_fn,
+        locate_frame_fn=_make_fake_locate_frame_fn(locate_calls),
+        save_frame_image_fn=_make_fake_save_image_fn(save_calls),
+        caption_source=caption_source,
+    )
+
+    assert caption_source.calls == ["https://www.youtube.com/watch?v=x"]
+    assert result.transcript_source == "captions_local_asr"
+    assert result.output.diagnostics["transcript_source"] == "captions_local_asr"
+    # The full-video ASR path (asr_adapter.transcribe("movie.mp4")) must be
+    # skipped entirely when captions successfully provide a confirmed match --
+    # only the local-window (temp-file) transcribe call should have happened.
+    assert "movie.mp4" not in asr.calls
+    assert result.search_result.chosen is not None
+
+
+def test_run_pipeline_falls_back_to_full_video_asr_when_captions_unavailable(tmp_path):
+    media_resolver = _FakeMediaResolver(local_path="movie.mp4", provider="youtube")
+    asr = _FakeASR(_transcript_with_target())
+    caption_source = _FakeCaptionSourceNoCaptions()
+    locate_calls, save_calls = [], []
+
+    result = run_pipeline(
+        "https://www.youtube.com/watch?v=x",
+        "My mind rebels at stagnation",
+        output_dir=tmp_path,
+        media_resolver=media_resolver,
+        asr_adapter=asr,
+        extract_audio_clip_fn=_fake_audio_clip_fn,
+        locate_frame_fn=_make_fake_locate_frame_fn(locate_calls),
+        save_frame_image_fn=_make_fake_save_image_fn(save_calls),
+        caption_source=caption_source,
+    )
+
+    assert result.transcript_source == "full_video_asr"
+    assert "movie.mp4" in asr.calls
+    assert result.search_result.chosen is not None
+
+
+def test_run_pipeline_default_has_captions_disabled(tmp_path):
+    media_resolver = _FakeMediaResolver(local_path="movie.mp4", provider="youtube")
+    asr = _FakeASR(_transcript_with_target())
+    locate_calls, save_calls = [], []
+
+    result = run_pipeline(
+        "https://www.youtube.com/watch?v=x",
+        "My mind rebels at stagnation",
+        output_dir=tmp_path,
+        media_resolver=media_resolver,
+        asr_adapter=asr,
+        extract_audio_clip_fn=_fake_audio_clip_fn,
+        locate_frame_fn=_make_fake_locate_frame_fn(locate_calls),
+        save_frame_image_fn=_make_fake_save_image_fn(save_calls),
+    )
+
+    assert result.transcript_source == "full_video_asr"
+    assert "movie.mp4" in asr.calls
 
 
 def test_run_pipeline_saves_image_under_images_subdirectory(tmp_path):

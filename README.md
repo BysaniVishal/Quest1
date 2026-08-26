@@ -7,6 +7,9 @@ applicable), the identified dialogue text, and the corresponding frame as an ima
 The dialogue is located by its **spoken audio**, not by on-screen text/subtitles — see
 [APPROACH.md](APPROACH.md) for the full design and algorithm.
 
+Two ways to run it: a **CLI** (`python -m dialogue_frame_finder ...`) and a **browser-based
+Web UI** — both call the exact same underlying pipeline, no logic duplicated between them.
+
 ## Setup
 
 Requires Python 3.10+.
@@ -58,12 +61,9 @@ python -m dialogue_frame_finder \
   --format worst
 ```
 
-`--format worst` is recommended: it makes yt-dlp pull the smallest available stream
-instead of the best-quality one, which downloads much faster and is far less likely to
-hit a connection reset on a flaky source (this project only needs the audio to transcribe
-and the frames to extract a still from, so resolution doesn't affect correctness — see
-`python -m dialogue_frame_finder --help` for the full flag description). Omit it if you
-want the highest-quality source frame image instead.
+`--format worst` is recommended: faster, smaller download, no effect on correctness
+(resolution doesn't matter to the pipeline — see `--help` for all flags). Omit it for a
+higher-quality source frame image.
 
 Example output (real run, default config — `base.en` ASR, `valid_score_threshold=0.70`):
 
@@ -76,12 +76,9 @@ Image     : outputs\images\frame_325.013.png
 Confidence: 0.832
 ```
 
-`Text` shows what the system actually transcribed and matched against (here, a real ASR
-error — "its" instead of "at" — that the matching pipeline correctly tolerated), not the
-target phrase echoed back; see APPROACH.md §5. Exact `Frame`/`Timestamp` values can shift
-slightly run-to-run (different `--format` selection changes the video's own frame grid;
-ASR word timing has small run-to-run variance) — the identified *location* in the video
-does not.
+`Text` is what was actually transcribed (here, a real ASR error — "its" instead of "at" —
+tolerated correctly), not the target phrase echoed back; see APPROACH.md §5. Exact
+`Frame`/`Timestamp` can shift slightly run-to-run; the identified *location* does not.
 
 The same command works unmodified against a YouTube URL — provider-specific handling is
 isolated to media resolution only (APPROACH.md §3):
@@ -93,7 +90,38 @@ python -m dialogue_frame_finder \
   --format worst
 ```
 
+## Optional: caption-assisted latency optimization
+
+`--use-captions` is opt-in (off by default) — when a video has captions, they're used to
+locate a candidate region, then ASR runs on just that local audio window instead of the
+whole video. Captions are **never** used for the final timestamp/frame — only real ASR is.
+Falls back automatically to the normal full-video path if captions are unavailable or don't
+confirm a match. See APPROACH.md §10 for the design, the real measured speedup, and a real
+measured limitation.
+
+```bash
+python -m dialogue_frame_finder "<url>" "<target dialogue>" --use-captions
+```
+
 Exit code is `0` on a confident/ambiguous match, `1` on `NO_CONFIDENT_MATCH`.
+
+## Web UI
+
+A browser-based alternative to the CLI. It's a thin layer over the same `run_pipeline` the
+CLI uses — no matching/verification/ASR logic is duplicated. Optional dependency, kept out
+of `requirements.txt`:
+
+```bash
+pip install -r requirements-web.txt
+$env:PYTHONPATH = "src"   # PowerShell; use `export PYTHONPATH=src` on bash
+python -m uvicorn dialogue_frame_finder.api:app --reload
+```
+
+Then open `http://127.0.0.1:8000` — paste a video URL, enter the dialogue, click **Find
+Frame**. Progress is shown as real pipeline stage names, never a fabricated percentage.
+"Use captions" and the ASR model selector are tucked behind an **Advanced** section — the
+default flow only needs a URL and a dialogue. See APPROACH.md §11 for the API/UI
+architecture and §10 for the caption-assisted path the toggle enables.
 
 ## Output contract
 
@@ -152,7 +180,7 @@ committed to the repository.
 
 ## Project structure
 
-See APPROACH.md §11.
+See APPROACH.md §13.
 
 ## Design and algorithm
 

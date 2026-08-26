@@ -1,0 +1,6 @@
+# Optional: only needed to run the web UI (dialogue_frame_finder.api / the
+# web/ frontend). Not required for the CLI, the core pipeline, or the
+# offline test suite -- kept out of requirements.txt for that reason,
+# matching how faster-whisper/anthropic are already handled as optional.
+fastapi>=0.110
+uvicorn[standard]>=0.27

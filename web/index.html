@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dialogue-to-Frame Finder</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Dialogue-to-Frame Finder</h1>
+      <p class="subtitle">Find the exact video frame where a line of dialogue is spoken.</p>
+    </header>
+
+    <form id="search-form" class="card">
+      <div class="field">
+        <label for="url">Video URL</label>
+        <input id="url" name="url" type="text" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" />
+        <p class="field-error" id="url-error" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="dialogue">Dialogue to find</label>
+        <input id="dialogue" name="dialogue" type="text" placeholder="one small step for man" autocomplete="off" />
+        <p class="field-error" id="dialogue-error" hidden></p>
+      </div>
+
+      <details class="advanced">
+        <summary>Advanced</summary>
+        <div class="advanced-body">
+          <label class="checkbox-row">
+            <input id="use-captions" type="checkbox" />
+            <span>Use captions when available (faster, falls back automatically)</span>
+          </label>
+          <div class="field">
+            <label for="asr-model">ASR model</label>
+            <select id="asr-model">
+              <option value="">Default (base.en)</option>
+              <option value="tiny.en">tiny.en (fastest, lowest accuracy)</option>
+              <option value="base.en">base.en</option>
+              <option value="large-v3-turbo">large-v3-turbo (slowest, highest accuracy)</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <button type="submit" id="submit-btn" class="primary-btn">Find Frame</button>
+    </form>
+
+    <section id="progress" class="card" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="progress-stage">Starting...</p>
+    </section>
+
+    <section id="results" class="card results" hidden></section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
