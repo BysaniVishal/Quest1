@@ -580,6 +580,16 @@ Then:
 The UI also exposes an **Advanced** section containing options such as caption
 assistance and ASR model selection.
 
+### Example result (real run)
+
+![Web UI result: High confidence match with extracted frame, timestamp, frame number, confidence, transcribed text, and ASR source](docs/screenshots/web-ui-result.png)
+
+This is the same underlying pipeline output as the CLI's plain-text result above — the
+frame image displayed inline instead of just a file path, `Status`/`Timestamp`/`Frame`/
+`Confidence` as badges/chips, and the transcribed `Text` in a quoted block, with the
+`Source` line showing whether the result came from full-video ASR or the caption-assisted
+path.
+
 ### Progress reporting
 
 The backend reports actual pipeline stages rather than inventing a percentage.
@@ -719,6 +729,9 @@ Quest1/
 │   ├── index.html
 │   ├── style.css
 │   └── app.js
+│
+├── docs/
+│   └── screenshots/          (README images, e.g. web-ui-result.png)
 │
 ├── tests/
 │   ├── unit/
