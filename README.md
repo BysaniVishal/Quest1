@@ -136,6 +136,12 @@ manual symlink configuration should be necessary.
 
 The project is run directly from the `src/` layout rather than installed as a package.
 
+#### Windows CMD
+
+```cmd
+set PYTHONPATH=src
+```
+
 #### PowerShell
 
 ```powershell
@@ -149,6 +155,45 @@ export PYTHONPATH=src
 ```
 
 Set this once per terminal session.
+
+---
+
+# Quick Start (copy-paste)
+
+From a fresh terminal:
+
+**1. Open a terminal in the project folder** (`cd` into wherever you cloned this repo):
+
+```cmd
+cd path\to\quest1-dialogue-frame-finder
+```
+
+**2. Install dependencies** (one-time):
+
+```cmd
+pip install -r requirements.txt
+```
+
+**3. Set `PYTHONPATH`** (once per terminal session — pick the command for your shell
+from [Set PYTHONPATH](#set-pythonpath) above).
+
+**4a. Run the CLI:**
+
+```cmd
+python -m dialogue_frame_finder "<video_url>" "<target dialogue>"
+```
+
+**4b. — or run the Web UI instead:**
+
+```cmd
+pip install -r requirements-web.txt
+python -m uvicorn dialogue_frame_finder.api:app --reload
+```
+
+Then open `http://127.0.0.1:8000` in a browser, enter the video URL and dialogue, and
+click **Find Frame**. To stop the server, go back to that terminal and press `Ctrl+C`.
+
+Full details for both, including examples and expected output, below.
 
 ---
 
@@ -493,6 +538,12 @@ pip install -r requirements-web.txt
 ```
 
 Set `PYTHONPATH`:
+
+#### Windows CMD
+
+```cmd
+set PYTHONPATH=src
+```
 
 #### PowerShell
 
